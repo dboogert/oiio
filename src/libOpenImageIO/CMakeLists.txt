@@ -1,3 +1,5 @@
+set(CMAKE_CXX_FLAGS "-march=i586")
+
 set (libOpenImageIO_hdrs ../include/argparse.h
                          ../include/colortransfer.h
                          ../include/dassert.h
