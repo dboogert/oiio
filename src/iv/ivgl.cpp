@@ -38,7 +38,12 @@
 
 #include <OpenEXR/half.h>
 #include <OpenEXR/ImathFun.h>
-#include <QGLFormat>
+
+#include <QtGui/QComboBox>
+#include <QtGui/QLabel>
+#include <QtGui/QMouseEvent>
+#include <QtGui/QProgressBar>
+#include <QtOpenGL/QGLFormat>
 
 #include <boost/algorithm/string.hpp>
 using boost::algorithm::iequals;
@@ -321,6 +326,11 @@ IvGL::create_shaders (void)
     }
     if (m_shaders_created)
         return;
+    
+    //initialize shader object handles for abort function
+    m_shader_program = 0;
+    m_vertex_shader = 0;
+    m_fragment_shader = 0;
 
     // When using extensions to support shaders, we need to load the function
     // entry points (which is actually done by GLEW) and then call them. So
@@ -352,7 +362,8 @@ IvGL::create_shaders (void)
     if (! status) {
         std::cerr << "vertex shader compile status: " << status << "\n";
         print_shader_log (std::cerr, m_vertex_shader);
-        // FIXME: How to handle this error?
+        create_shaders_abort ();
+        return;
     }
     if (m_shaders_using_extensions) {
         glAttachObjectARB (m_shader_program, m_vertex_shader);
@@ -376,7 +387,8 @@ IvGL::create_shaders (void)
     if (! status) {
         std::cerr << "fragment shader compile status: " << status << "\n";
         print_shader_log(std::cerr, m_fragment_shader);
-        // FIXME: How to handle this error?
+        create_shaders_abort ();
+        return;
     }
     if (m_shaders_using_extensions) {
         glAttachObjectARB (m_shader_program, m_fragment_shader);
@@ -400,7 +412,6 @@ IvGL::create_shaders (void)
     }
     if (! linked) {
         std::cerr << "NOT LINKED\n";
-        // FIXME: How to handle this error?
         char buf[10000];
         buf[0] = 0;
         GLsizei len;
@@ -410,9 +421,40 @@ IvGL::create_shaders (void)
             glGetProgramInfoLog (m_shader_program, sizeof(buf), &len, buf);
         }
         std::cerr << "link log:\n" << buf << "---\n";
+        create_shaders_abort ();
+        return;
     }
 
     m_shaders_created = true;
+}
+
+
+
+void
+IvGL::create_shaders_abort (void)
+{
+    if (m_shaders_using_extensions) {
+        glUseProgramObjectARB (0);
+        if (m_shader_program)
+            //this will also detach related shaders
+            glDeleteObjectARB (m_shader_program);
+        if (m_vertex_shader)
+            glDeleteObjectARB (m_vertex_shader);
+        if (m_fragment_shader)
+            glDeleteObjectARB (m_fragment_shader);
+    }
+    else {
+        glUseProgram (0);        
+        if (m_shader_program)
+            glDeleteProgram (m_shader_program);
+        if (m_vertex_shader)
+            glDeleteShader (m_vertex_shader);
+        if (m_fragment_shader)
+            glDeleteShader (m_fragment_shader);
+    }
+    
+    GLERRPRINT ("After delete shaders");    
+    m_use_shaders = false;
 }
 
 
@@ -829,7 +871,7 @@ IvGL::paint_pixelview ()
     float extraspace = yspacing * (1 + spec.nchannels) + 4;
     glColor4f (0.1f, 0.1f, 0.1f, 0.5f);
     gl_rect (-0.5f*closeupsize-2, 0.5f*closeupsize+2,
-             0.5f*closeupsize+2, -0.5f*closeupsize - extraspace, -0.1);
+             0.5f*closeupsize+2, -0.5f*closeupsize - extraspace, -0.1f);
 
     if (xp >= 0 && xp < img->oriented_width() && yp >= 0 && yp < img->oriented_height()) {
         // Now we print text giving the mouse coordinates and the numerical
@@ -1221,7 +1263,7 @@ IvGL::wheelEvent (QWheelEvent *event)
 
 
 void
-IvGL::focusOutEvent (QFocusEvent *event)
+IvGL::focusOutEvent (QFocusEvent*)
 {
     m_mouse_activation = true;
 }

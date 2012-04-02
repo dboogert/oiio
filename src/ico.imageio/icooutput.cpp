@@ -43,9 +43,6 @@
 #include "strutil.h"
 #include "fmath.h"
 
-#include <boost/algorithm/string.hpp>
-using boost::algorithm::iequals;
-
 OIIO_PLUGIN_NAMESPACE_BEGIN
 
 using namespace ICO_pvt;
@@ -199,7 +196,7 @@ ICOOutput::open (const std::string &name, const ImageSpec &userspec,
                     + (4 - ((m_spec.width + 7) / 8) % 4) % 4; // padding
 
         // Force 8 bit integers
-        if (m_spec.format != TypeDesc::UINT16)
+        if (m_spec.format != TypeDesc::UINT8)
             m_spec.set_format (TypeDesc::UINT8);
     }
 
@@ -367,7 +364,7 @@ bool
 ICOOutput::supports (const std::string &feature) const
 {
     // advertise our support for subimages
-    if (iequals (feature, "multiimage"))
+    if (Strutil::iequals (feature, "multiimage"))
         return true;
     return false;
 }

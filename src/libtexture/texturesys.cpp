@@ -47,6 +47,7 @@ using namespace std::tr1;
 #include "thread.h"
 #include "fmath.h"
 #include "filter.h"
+#include "optparser.h"
 #include "imageio.h"
 
 #include "texture.h"
@@ -112,55 +113,68 @@ namespace pvt {   // namespace pvt
 // instead.
 
 
-bool TextureSystemImpl::wrap_black (int &coord, int width)
+bool
+TextureSystemImpl::wrap_black (int &coord, int origin, int width)
 {
-    return (coord >= 0 && coord < width);
+    return (coord >= origin && coord < (width+origin));
 }
 
 
-bool TextureSystemImpl::wrap_clamp (int &coord, int width)
+bool
+TextureSystemImpl::wrap_clamp (int &coord, int origin, int width)
 {
-    if (coord < 0)
-        coord = 0;
-    else if (coord >= width)
-        coord = width-1;
+    if (coord < origin)
+        coord = origin;
+    else if (coord >= origin+width)
+        coord = origin+width-1;
     return true;
 }
 
 
-bool TextureSystemImpl::wrap_periodic (int &coord, int width)
+bool
+TextureSystemImpl::wrap_periodic (int &coord, int origin, int width)
 {
+    coord -= origin;
     coord %= width;
     if (coord < 0)       // Fix negative values
         coord += width;
+    coord += origin;
     return true;
 }
 
 
-bool TextureSystemImpl::wrap_periodic2 (int &coord, int width)
+bool
+TextureSystemImpl::wrap_periodic2 (int &coord, int origin, int width)
 {
-    coord &= (width - 1);  // Shortcut periodic if we're sure it's a pow of 2
+    coord -= origin;
+    coord &= (width - 1); // Shortcut periodic if we're sure it's a pow of 2
+    coord += origin;
     return true;
 }
 
 
-bool TextureSystemImpl::wrap_periodic_sharedborder (int &coord, int width)
+bool
+TextureSystemImpl::wrap_periodic_sharedborder (int &coord, int origin, int width)
 {
     // Like periodic, but knowing that the first column and last are
     // actually the same position, so we essentially skip the first
     // column in the next cycle.  We only need this to work for one wrap
     // in each direction since it's only used for latlong maps.
+    coord -= origin;
     if (coord >= width) {
         coord = coord - width + 1;
     } else if (coord < 0) {
         coord = coord + width - 1;
     }
+    coord += origin;
     return true;
 }
 
 
-bool TextureSystemImpl::wrap_mirror (int &coord, int width)
+bool
+TextureSystemImpl::wrap_mirror (int &coord, int origin, int width)
 {
+    coord -= origin;
     bool negative = (coord < 0);
     int iter = coord / width;    // Which iteration of the pattern?
     coord -= iter * width;
@@ -172,6 +186,7 @@ bool TextureSystemImpl::wrap_mirror (int &coord, int width)
     if (flip)
         coord = width - 1 - coord;
     DASSERT (coord >= 0 && coord < width);
+    coord += origin;
     return true;
 }
 
@@ -232,6 +247,11 @@ TextureSystemImpl::init ()
     delete hq_filter;
     hq_filter = Filter1D::create ("b-spline", 4);
     m_statslevel = 0;
+
+    // Allow environment variable to override default options
+    const char *options = getenv ("OPENIMAGEIO_TEXTURE_OPTIONS");
+    if (options)
+        attribute ("options", options);
 }
 
 
@@ -299,10 +319,22 @@ TextureSystemImpl::printstats () const
 
 
 
+void
+TextureSystemImpl::reset_stats ()
+{
+    ASSERT (m_imagecache);
+    m_imagecache->reset_stats ();
+}
+
+
+
 bool
 TextureSystemImpl::attribute (const std::string &name, TypeDesc type,
                               const void *val)
 {
+    if (name == "options" && type == TypeDesc::STRING) {
+        return optparser (*this, *(const char **)val);
+    }
     if (name == "worldtocommon" && (type == TypeDesc::TypeMatrix ||
                                     type == TypeDesc(TypeDesc::FLOAT,16))) {
         m_Mw2c = *(const Imath::M44f *)val;
@@ -649,18 +681,28 @@ TextureSystemImpl::texture (TextureHandle *texture_handle_,
     if (! texturefile  ||  texturefile->broken())
         return missing_texture (options, result);
 
+    const ImageCacheFile::SubimageInfo &subinfo (texturefile->subimageinfo(options.subimage));
     const ImageSpec &spec (texturefile->spec(options.subimage, 0));
+
+    if (! subinfo.full_pixel_range) {  // remap st for overscan or crop
+        s = s * subinfo.sscale + subinfo.soffset;
+        dsdx *= subinfo.sscale;
+        dsdy *= subinfo.sscale;
+        t = t * subinfo.tscale + subinfo.toffset;
+        dtdx *= subinfo.tscale;
+        dtdy *= subinfo.tscale;
+    }
 
     // Figure out the wrap functions
     if (options.swrap == TextureOpt::WrapDefault)
         options.swrap = (TextureOpt::Wrap)texturefile->swrap();
-    if (options.swrap == TextureOpt::WrapPeriodic && ispow2(spec.full_width))
+    if (options.swrap == TextureOpt::WrapPeriodic && ispow2(spec.width))
         options.swrap_func = wrap_periodic2;
     else
         options.swrap_func = wrap_functions[(int)options.swrap];
     if (options.twrap == TextureOpt::WrapDefault)
         options.twrap = (TextureOpt::Wrap)texturefile->twrap();
-    if (options.twrap == TextureOpt::WrapPeriodic && ispow2(spec.full_height))
+    if (options.twrap == TextureOpt::WrapPeriodic && ispow2(spec.height))
         options.twrap_func = wrap_periodic2;
     else
         options.twrap_func = wrap_functions[(int)options.twrap];
@@ -760,18 +802,33 @@ adjust_width_blur (float &dsdx, float &dtdx, float &dsdy, float &dtdy,
     dsdy *= swidth;
     dtdy *= twidth;
 
-#if 1
     // Clamp degenerate derivatives so they don't cause mathematical problems
-    static const float eps = 1.0e-8f;
-    if (fabsf(dsdx) < eps)
-        dsdx = copysignf (eps, dsdx);
-    if (fabsf(dtdx) < eps)
-        dtdx = copysignf (eps, dtdx);
-    if (fabsf(dsdy) < eps)
-        dsdy = copysignf (eps, dsdy);
-    if (fabsf(dtdy) < eps)
-        dtdy = copysignf (eps, dtdy);
-#endif
+    static const float eps = 1.0e-8f, eps2 = eps*eps;
+    float dxlen2 = dsdx*dsdx + dtdx*dtdx;
+    float dylen2 = dsdy*dsdy + dtdy*dtdy;
+    if (dxlen2 < eps2) {   // Tiny dx
+        if (dylen2 < eps2) {
+            // Tiny dx and dy: Essentially point sampling.  Substitute a
+            // tiny but finite filter.
+            dsdx = eps; dsdy = 0;
+            dtdx = 0;   dtdy = eps;
+            dxlen2 = dylen2 = eps2;
+        } else {
+            // Tiny dx, sane dy -- pick a small dx orthogonal to dy, but
+            // of length eps.
+            float scale = eps / sqrtf(dylen2);
+            dsdx = dtdy * scale;
+            dtdx = -dsdy * scale;
+            dxlen2 = eps2;
+        }
+    } else if (dylen2 < eps2) {
+        // Tiny dy, sane dx -- pick a small dy orthogonal to dx, but of
+        // length eps.
+        float scale = eps / sqrtf(dxlen2);
+        dsdy = -dtdx * scale;
+        dtdy = dsdx * scale;
+        dylen2 = eps2;
+    }
 
     if (sblur+tblur != 0.0f /* avoid the work when blur is zero */) {
         // Carefully add blur to the right derivative components in the
@@ -779,8 +836,8 @@ adjust_width_blur (float &dsdx, float &dtdx, float &dsdy, float &dtdy,
         // to all four derivatives blurs too much at some angles.
         // FIXME -- we should benchmark whether a fast approximate rsqrt
         // here could have any detectable performance improvement.
-        float dxlen_inv = 1.0f / sqrtf (dsdx*dsdx + dtdx*dtdx);
-        float dylen_inv = 1.0f / sqrtf (dsdy*dsdy + dtdy*dtdy);
+        float dxlen_inv = 1.0f / sqrtf (dxlen2);
+        float dylen_inv = 1.0f / sqrtf (dylen2);
         dsdx += sblur * dsdx * dxlen_inv;
         dtdx += tblur * dtdx * dxlen_inv;
         dsdy += sblur * dsdy * dylen_inv;
@@ -829,7 +886,7 @@ TextureSystemImpl::texture_lookup_trilinear_mipmap (TextureFile &texturefile,
     int nmiplevels = (int)subinfo.levels.size();
     for (int m = 0;  m < nmiplevels;  ++m) {
         // Compute the filter size in raster space at this MIP level
-        float filtwidth_ras = subinfo.spec(m).full_width * filtwidth;
+        float filtwidth_ras = subinfo.spec(m).width * filtwidth;
         // Once the filter width is smaller than one texel at this level,
         // we've gone too far, so we know that we want to interpolate the
         // previous level and the current level.  Note that filtwidth_ras
@@ -870,7 +927,7 @@ TextureSystemImpl::texture_lookup_trilinear_mipmap (TextureFile &texturefile,
         &TextureSystemImpl::accum_sample_bilinear,
     };
     accum_prototype accumer = accum_functions[(int)options.interpmode];
-//    if (level == 0 || texturefile.spec(lev).full_height < naturalres/2)
+//    if (level == 0 || texturefile.spec(lev).height < naturalres/2)
 //        accumer = &TextureSystemImpl::accum_sample_bicubic;
 
     // FIXME -- support for smart cubic?
@@ -912,35 +969,15 @@ ellipse_axes (float dsdx, float dtdx, float dsdy, float dtdy,
     float dtdx2 = dtdx*dtdx;
     float dsdy2 = dsdy*dsdy;
     float dtdy2 = dtdy*dtdy;
-    float A = dtdx2 + dtdy2;
-    float B = -2.0f * (dsdx * dtdx + dsdy * dtdy);
-    float C = dsdx2 + dsdy2;
-    float F = A*C - B*B*0.25f;
-    if (fabsf(F) < 1.0e-12f) {
-        // Something wrong, minuscule derivs?  Punt.
-        // std::cerr << "too small ABCF " << A << ' ' << B << ' ' << C << ' ' << F << "\n";
-        // std::cerr << "derivs " << dsdx << ' ' << dtdx << ' ' << dsdy << ' ' << dtdy << "\n";
-        if ((dsdy2+dtdy2) > (dsdx2+dtdx2)) {
-            majorlength = std::max (sqrtf(dsdy2+dtdy2), 1.0e-8f);
-            minorlength = 1.0e-8f;
-            return 1;
-        } else {
-            majorlength = std::max (sqrtf(dsdx2+dtdx2), 1.0e-8f);
-            minorlength = 1.0e-8f;
-            return 0;
-        }
-    }
-    float F_inv = 1.0f / F;
-    A *= F_inv;
-    B *= F_inv;
-    C *= F_inv;
-    float root = hypotf (A-C, B);
-    float Aprime = (A + C - root) * 0.5f;
-    float Cprime = (A + C + root) * 0.5f;
-    // FIXME -- look into whether a "fast rsqrt" would help here, or if
-    // these couple of sqrtfs are insignificant comapred to everything else.
-    majorlength = sqrtf (1.0f / Aprime);
-    minorlength = sqrtf (1.0f / Cprime);
+    double A = dtdx2 + dtdy2;
+    double B = -2.0 * (dsdx * dtdx + dsdy * dtdy);
+    double C = dsdx2 + dsdy2;
+    double F = A*C - B*B*0.25;
+    double root = hypot (A-C, B);
+    double Aprime = (A + C - root) * 0.5;
+    double Cprime = (A + C + root) * 0.5;
+    majorlength = A > 0 ? sqrtf (F / Aprime) : 0;
+    minorlength = C > 0 ? sqrtf (F / Cprime) : 0;
     // N.B. Various papers (including the FELINE ones, imply that the
     // above calculations is the major and minor radii, but we treat
     // them as the diameter.  Tests indicate that we are filtering just
@@ -1052,7 +1089,7 @@ TextureSystemImpl::texture_lookup (TextureFile &texturefile,
         // MIP level.  We use the smaller of the two texture resolutions,
         // which is better than just using one, but a more principled
         // approach is desired but remains elusive.  FIXME.
-        float filtwidth_ras = minorlength * std::min (subinfo.spec(m).full_width, subinfo.spec(m).full_height);
+        float filtwidth_ras = minorlength * std::min (subinfo.spec(m).width, subinfo.spec(m).height);
         // Once the filter width is smaller than one texel at this level,
         // we've gone too far, so we know that we want to interpolate the
         // previous level and the current level.  Note that filtwidth_ras
@@ -1077,6 +1114,13 @@ TextureSystemImpl::texture_lookup (TextureFile &texturefile,
         miplevel[0] = 0;
         miplevel[1] = 0;
         levelblend = 0;
+        // It's possible that minorlength is degenerate, giving an aspect
+        // ratio that implies a huge nsamples, which is pointless if those
+        // samples are too close.  So if minorlength is less than 1/2 texel
+        // at the finest resolution, clamp it and recalculate aspect.
+        int r = std::max (subinfo.spec(0).full_width, subinfo.spec(0).full_height);
+        if (minorlength*r < 0.5f)
+            aspect = Imath::clamp (majorlength * r * 2.0f, 1.0f, float(options.anisotropic));
     }
     if (options.mipmode == TextureOpt::MipModeOneLevel) {
         miplevel[0] = miplevel[1];
@@ -1112,8 +1156,8 @@ TextureSystemImpl::texture_lookup (TextureFile &texturefile,
             break;
         case TextureOpt::InterpSmartBicubic :
             if (lev == 0 || 
-                (texturefile.spec(options.subimage,lev).full_width < naturalsres/2) ||
-                (texturefile.spec(options.subimage,lev).full_height < naturaltres/2)) {
+                (texturefile.spec(options.subimage,lev).width < naturalsres/2) ||
+                (texturefile.spec(options.subimage,lev).height < naturaltres/2)) {
                 accumer = &TextureSystemImpl::accum_sample_bicubic;
                 ++bicubicprobes;
             } else {
@@ -1245,6 +1289,7 @@ TextureSystemImpl::accum_sample_closest (float s, float t, int miplevel,
     int stex, ttex;    // Texel coordintes
     float sfrac, tfrac;
     st_to_texel (s, t, texturefile, spec, stex, ttex, sfrac, tfrac);
+
     if (sfrac > 0.5f)
         ++stex;
     if (tfrac > 0.5f)
@@ -1253,8 +1298,8 @@ TextureSystemImpl::accum_sample_closest (float s, float t, int miplevel,
     // Wrap
     DASSERT (options.swrap_func != NULL && options.twrap_func != NULL);
     bool svalid, tvalid;  // Valid texels?  false means black border
-    svalid = options.swrap_func (stex, spec.full_width);
-    tvalid = options.twrap_func (ttex, spec.full_height);
+    svalid = options.swrap_func (stex, spec.x, spec.width);
+    tvalid = options.twrap_func (ttex, spec.y, spec.height);
     if (! levelinfo.full_pixel_range) {
         svalid &= (stex >= spec.x && stex < (spec.x+spec.width)); // data window
         tvalid &= (ttex >= spec.y && ttex < (spec.y+spec.height));
@@ -1321,10 +1366,10 @@ TextureSystemImpl::accum_sample_bilinear (float s, float t, int miplevel,
     const unsigned int all_valid = 0x01010101;
     bool *svalid = valid_storage.bvalid;
     bool *tvalid = valid_storage.bvalid + 2;
-    svalid[0] = options.swrap_func (stex[0], spec.full_width);
-    svalid[1] = options.swrap_func (stex[1], spec.full_width);
-    tvalid[0] = options.twrap_func (ttex[0], spec.full_height);
-    tvalid[1] = options.twrap_func (ttex[1], spec.full_height);
+    svalid[0] = options.swrap_func (stex[0], spec.x, spec.width);
+    svalid[1] = options.swrap_func (stex[1], spec.x, spec.width);
+    tvalid[0] = options.twrap_func (ttex[0], spec.y, spec.height);
+    tvalid[1] = options.twrap_func (ttex[1], spec.y, spec.height);
 
     // FIXME -- we've got crop windows all wrong
 
@@ -1414,7 +1459,7 @@ TextureSystemImpl::accum_sample_bilinear (float s, float t, int miplevel,
     // we converge to a single pole color right at the pole.  Fade to
     // the average color over the texel height right next to the pole.
     if (options.envlayout == LayoutLatLong && levelinfo.onetile) {
-        float height = spec.full_height;
+        float height = spec.height;
         if (texturefile.m_sample_border)
             height -= 1.0f;
         float tt = t * height;
@@ -1431,8 +1476,8 @@ TextureSystemImpl::accum_sample_bilinear (float s, float t, int miplevel,
                                          uchar2float(texel[1][0][c]), uchar2float(texel[1][1][c]),
                                          sfrac, tfrac);
         if (daccumds) {
-            float scalex = weight * spec.full_width;
-            float scaley = weight * spec.full_height;
+            float scalex = weight * spec.width;
+            float scaley = weight * spec.height;
             for (c = 0;  c < nc;  ++c) {
                 daccumds[c] += scalex * Imath::lerp(
                     uchar2float(texel[0][1][c]) - uchar2float(texel[0][0][c]),
@@ -1452,8 +1497,8 @@ TextureSystemImpl::accum_sample_bilinear (float s, float t, int miplevel,
                     (const float *)texel[1][0], (const float *)texel[1][1],
                     sfrac, tfrac, weight, nc, accum);
         if (daccumds) {
-            float scalex = weight * spec.full_width;
-            float scaley = weight * spec.full_height;
+            float scalex = weight * spec.width;
+            float scaley = weight * spec.height;
             for (int c = 0;  c < nc;  ++c) {
                 daccumds[c] += scalex * Imath::lerp(
                     ((const float *) texel[0][1])[c] - ((const float *) texel[0][0])[c],
@@ -1521,12 +1566,12 @@ TextureSystemImpl::accum_sample_bicubic (float s, float t, int miplevel,
     for (int i = 0; i < 4;  ++i) {
         bool v;
         stex[i] = sint + i - 1;
-        v = options.swrap_func (stex[i], spec.full_width);
+        v = options.swrap_func (stex[i], spec.x, spec.width);
         svalid[i] = v;
         allvalid &= v;
         anyvalid |= v;
         ttex[i] = tint + i - 1;
-        v = options.twrap_func (ttex[i], spec.full_height);
+        v = options.twrap_func (ttex[i], spec.y, spec.height);
         tvalid[i] = v;
         allvalid &= v;
         anyvalid |= v;
@@ -1622,7 +1667,7 @@ TextureSystemImpl::accum_sample_bicubic (float s, float t, int miplevel,
     // we converge to a single pole color right at the pole.  Fade to
     // the average color over the texel height right next to the pole.
     if (options.envlayout == LayoutLatLong && levelinfo.onetile) {
-        float height = spec.full_height;
+        float height = spec.height;
         if (texturefile.m_sample_border)
             height -= 1.0f;
         float tt = t * height;
@@ -1668,8 +1713,8 @@ TextureSystemImpl::accum_sample_bicubic (float s, float t, int miplevel,
         if (daccumds) {
             float dwx[4]; evalBSplineWeightDerivs (dwx, sfrac);
             float dwy[4]; evalBSplineWeightDerivs (dwy, tfrac);
-            float scalex = weight * spec.full_width;
-            float scaley = weight * spec.full_height;
+            float scalex = weight * spec.width;
+            float scaley = weight * spec.height;
             for (int c = 0;  c < nc; ++c) {
                 daccumds[c] += scalex * (
                     dwx[0] * (wy[0] * uchar2float(texel[0][0][c]) +
@@ -1725,8 +1770,8 @@ TextureSystemImpl::accum_sample_bicubic (float s, float t, int miplevel,
         if (daccumds) {
             float dwx[4]; evalBSplineWeightDerivs (dwx, sfrac);
             float dwy[4]; evalBSplineWeightDerivs (dwy, tfrac);
-            float scalex = weight * spec.full_width;
-            float scaley = weight * spec.full_height;
+            float scalex = weight * spec.width;
+            float scaley = weight * spec.height;
             for (int c = 0;  c < nc; ++c) {
                 daccumds[c] += scalex * (
                     dwx[0] * (wy[0] * ((const float*)(texel[0][0]))[c] +

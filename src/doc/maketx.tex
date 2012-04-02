@@ -41,6 +41,12 @@ Verbose status messages, including runtime statistics and timing.
 Sets the name of the output texture.
 \apiend
 
+\apiitem{--threads \emph{n}}
+Use \emph{n} execution threads if it helps to speed up image operations.
+The default (also if $n=0$) is to use as many threads as there are cores
+present in the hardware.
+\apiend
+
 \apiitem{--format {\rm \emph{formatname}}}
 Specifies the image format of the output file (e.g., ``tiff'',
 ``OpenEXR'', etc.).  If {\cf --format} is not used, \maketx will 
@@ -128,6 +134,15 @@ Checks every pixel of the input image to ensure that no NaN or Inf
 values are present.  If such non-finite pixel values are found, 
 an error message will be printed and {\cf maketx} will terminate without
 writing the output image (returning an error code).
+\apiend
+
+\apiitem{--fixnan {\rm \emph{streategy}}}
+Repairs any pixels in the input image that contained {\cf NaN} or 
+{\cf Inf} values (hereafter referred to collectively as ``nonfinite'').
+If \emph{strategy} is {\cf black}, nonfinite values will be replaced
+with {\cf 0}.  If \emph{strategy} is {\cf box3}, nonfinite values will
+be replaced by the average of all the finite values within a $3 \times 3$
+region surrounding the pixel.
 \apiend
 
 %\apiitem{--ingamma {\rm \emph{value}} \\
@@ -221,6 +236,33 @@ Specifically, this is the equivalent to using \\
  {\cf --separate --tile 64 64 --constant-color-detect --hash}.
 \apiend
 
+\apiitem{--colorconvert {\rm \emph{inspace outspace}}}
+Convert the color space of the input image from \emph{inspace} to
+\emph{tospace}.  If OpenColorIO is installed and finds a valid
+configuration, it will be used for the color conversion.  If OCIO
+is not enabled (or cannot find a valid configuration, OIIO will at
+least be able to convert among linear, sRGB, and Rec709.
+\apiend
+
+\apiitem{--unpremult}
+When undergoing color some conversions, it is helpful to
+``un-premultiply'' the alpha before converting color channels, and then
+re-multiplying by alpha.  Caveat emptor -- if you don't know exactly
+when to use this, you probably shouldn't be using it at all.
+\apiend
+
+
+\apiitem{--mipimage {\rm \emph{filename}}}
+Specifies the name of an image file to use as a custom MIP-map level, 
+instead of simply downsizing the last one.  This option may be used
+multiple times to specify multiple levels.  For example:
+\begin{code}
+    maketx 256.tif --miplevel 128.tif --miplevel 64.tif -o out.tx
+\end{code}
+This will make a texture with the first MIP level taken from {\cf 256.tif},
+the second level from {\cf 128.tif}, the third from {\cf 64.tif}, and
+then subsequent levels will be the usual downsizings of {\cf 64.tif}.
+\apiend
 
 % --shadow --shadcube
 % --volshad --envlatl --envcube --lightprobe --latl2envcube --vertcross

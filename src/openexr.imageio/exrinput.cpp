@@ -33,10 +33,6 @@
 #include <cmath>
 #include <map>
 
-#include <boost/algorithm/string.hpp>
-using boost::algorithm::iequals;
-using boost::algorithm::iends_with;
-
 #include <OpenEXR/ImfTestFile.h>
 #include <OpenEXR/ImfInputFile.h>
 #include <OpenEXR/ImfTiledInputFile.h>
@@ -72,9 +68,14 @@ public:
     virtual bool seek_subimage (int subimage, int miplevel, ImageSpec &newspec);
     virtual bool read_native_scanline (int y, int z, void *data);
     virtual bool read_native_scanlines (int ybegin, int yend, int z, void *data);
+    virtual bool read_native_scanlines (int ybegin, int yend, int z,
+                                        int firstchan, int nchans, void *data);
     virtual bool read_native_tile (int x, int y, int z, void *data);
     virtual bool read_native_tiles (int xbegin, int xend, int ybegin, int yend,
                                     int zbegin, int zend, void *data);
+    virtual bool read_native_tiles (int xbegin, int xend, int ybegin, int yend,
+                                    int zbegin, int zend,
+                                    int firstchan, int nchans, void *data);
 
 private:
     const Imf::Header *m_header;          ///< Ptr to image header
@@ -185,15 +186,17 @@ namespace pvt {
 
 void set_exr_threads ()
 {
-#if (BOOST_VERSION >= 103500)
     static int exr_threads = 0;  // lives in exrinput.cpp
     static spin_mutex exr_threads_mutex;  
+
+    int oiio_threads = 1;
+    OIIO_NAMESPACE::getattribute ("threads", oiio_threads);
+
     spin_lock lock (exr_threads_mutex);
-    if (! exr_threads) {
-        exr_threads = boost::thread::hardware_concurrency();
-        Imf::setGlobalThreadCount (exr_threads);
+    if (exr_threads != oiio_threads) {
+        exr_threads = oiio_threads;
+        Imf::setGlobalThreadCount (exr_threads == 1 ? 0 : exr_threads);
     }
-#endif
 }
 
 } // namespace pvt
@@ -202,8 +205,6 @@ void set_exr_threads ()
 
 OpenEXRInput::OpenEXRInput ()
 {
-    pvt::set_exr_threads ();
-
     init ();
 }
 
@@ -216,6 +217,8 @@ OpenEXRInput::open (const std::string &name, ImageSpec &newspec)
     bool tiled;
     if (! Imf::isOpenExrFile (name.c_str(), tiled))
         return false;
+
+    pvt::set_exr_threads ();
 
     m_spec = ImageSpec(); // Clear everything with default constructor
     
@@ -386,20 +389,20 @@ OpenEXRInput::query_channels (void)
         // std::cerr << "Channel " << ci.name() << '\n';
         const char* name = ci.name();
         m_channelnames.push_back (name);
-        if (red < 0 && (iequals(name, "R") || iequals(name, "Red") ||
-                        iends_with(name,".R") || iends_with(name,".Red")))
+        if (red < 0 && (Strutil::iequals(name, "R") || Strutil::iequals(name, "Red") ||
+                        Strutil::iends_with(name,".R") || Strutil::iends_with(name,".Red")))
             red = c;
-        if (green < 0 && (iequals(name, "G") || iequals(name, "Green") ||
-                          iends_with(name,".G") || iends_with(name,".Green")))
+        if (green < 0 && (Strutil::iequals(name, "G") || Strutil::iequals(name, "Green") ||
+                          Strutil::iends_with(name,".G") || Strutil::iends_with(name,".Green")))
             green = c;
-        if (blue < 0 && (iequals(name, "B") || iequals(name, "Blue") ||
-                         iends_with(name,".B") || iends_with(name,".Blue")))
+        if (blue < 0 && (Strutil::iequals(name, "B") || Strutil::iequals(name, "Blue") ||
+                         Strutil::iends_with(name,".B") || Strutil::iends_with(name,".Blue")))
             blue = c;
-        if (alpha < 0 && (iequals(name, "A") || iequals(name, "Alpha") ||
-                          iends_with(name,".A") || iends_with(name,".Alpha")))
+        if (alpha < 0 && (Strutil::iequals(name, "A") || Strutil::iequals(name, "Alpha") ||
+                          Strutil::iends_with(name,".A") || Strutil::iends_with(name,".Alpha")))
             alpha = c;
-        if (zee < 0 && (iequals(name, "Z") || iequals(name, "Depth") ||
-                        iends_with(name,".Z") || iends_with(name,".Depth")))
+        if (zee < 0 && (Strutil::iequals(name, "Z") || Strutil::iequals(name, "Depth") ||
+                        Strutil::iends_with(name,".Z") || Strutil::iends_with(name,".Depth")))
             zee = c;
         ++m_spec.nchannels;
     }
@@ -512,8 +515,27 @@ OpenEXRInput::seek_subimage (int subimage, int miplevel, ImageSpec &newspec)
 
     m_spec.width = w;
     m_spec.height = h;
-    m_spec.full_width = w;
-    m_spec.full_height = m_cubeface ? w : h;
+    // N.B. OpenEXR doesn't support data and display windows per MIPmap
+    // level.  So always take from the top level.
+    Imath::Box2i datawindow = m_header->dataWindow();
+    Imath::Box2i displaywindow = m_header->displayWindow();
+    m_spec.x = datawindow.min.x;
+    m_spec.y = datawindow.min.y;
+    if (miplevel == 0) {
+        m_spec.full_x = displaywindow.min.x;
+        m_spec.full_y = displaywindow.min.y;
+        m_spec.full_width = displaywindow.max.x - displaywindow.min.x + 1;
+        m_spec.full_height = displaywindow.max.y - displaywindow.min.y + 1;
+    } else {
+        m_spec.full_x = m_spec.x;
+        m_spec.full_y = m_spec.y;
+        m_spec.full_width = m_spec.width;
+        m_spec.full_height = m_spec.height;
+    }
+    if (m_cubeface) {
+        m_spec.full_width = w;
+        m_spec.full_height = w;
+    }
     newspec = m_spec;
 
     return true;
@@ -535,7 +557,7 @@ OpenEXRInput::close ()
 bool
 OpenEXRInput::read_native_scanline (int y, int z, void *data)
 {
-    return read_native_scanlines (y, y+1, z, data);
+    return read_native_scanlines (y, y+1, z, 0, m_spec.nchannels, data);
 }
 
 
@@ -543,16 +565,27 @@ OpenEXRInput::read_native_scanline (int y, int z, void *data)
 bool
 OpenEXRInput::read_native_scanlines (int ybegin, int yend, int z, void *data)
 {
-//    std::cerr << "rns " << ybegin << ' ' << yend << "\n";
-    ASSERT (m_input_scanline != NULL);
+    return read_native_scanlines (ybegin, yend, z, 0, m_spec.nchannels, data);
+}
+
+
+
+bool
+OpenEXRInput::read_native_scanlines (int ybegin, int yend, int z,
+                                     int firstchan, int nchans, void *data)
+{
+//    std::cerr << "openexr rns " << ybegin << ' ' << yend << ", channels "
+//              << firstchan << "-" << (firstchan+nchans-1) << "\n";
+    if (m_input_scanline == NULL)
+        return false;
 
     // Compute where OpenEXR needs to think the full buffers starts.
     // OpenImageIO requires that 'data' points to where the client wants
     // to put the pixels being read, but OpenEXR's frameBuffer.insert()
     // wants where the address of the "virtual framebuffer" for the
     // whole image.
-    size_t pixelbytes = m_spec.pixel_bytes (true);
-    size_t scanlinebytes = m_spec.scanline_bytes (true);
+    size_t pixelbytes = m_spec.pixel_bytes (firstchan, nchans, true);
+    size_t scanlinebytes = (size_t)m_spec.width * pixelbytes;
     char *buf = (char *)data
               - m_spec.x * pixelbytes
               - ybegin * scanlinebytes;
@@ -560,12 +593,12 @@ OpenEXRInput::read_native_scanlines (int ybegin, int yend, int z, void *data)
     try {
         Imf::FrameBuffer frameBuffer;
         size_t chanoffset = 0;
-        for (int c = 0;  c < m_spec.nchannels;  ++c) {
+        for (int c = 0;  c < nchans;  ++c) {
             size_t chanbytes = m_spec.channelformats.size() 
-                                  ? m_spec.channelformats[c].size() 
+                                  ? m_spec.channelformats[c+firstchan].size() 
                                   : m_spec.format.size();
-            frameBuffer.insert (m_spec.channelnames[c].c_str(),
-                                Imf::Slice (m_pixeltype[c],
+            frameBuffer.insert (m_spec.channelnames[c+firstchan].c_str(),
+                                Imf::Slice (m_pixeltype[c+firstchan],
                                             buf + chanoffset,
                                             pixelbytes, scanlinebytes));
             chanoffset += chanbytes;
@@ -586,7 +619,8 @@ bool
 OpenEXRInput::read_native_tile (int x, int y, int z, void *data)
 {
     return read_native_tiles (x, x+m_spec.tile_width, y, y+m_spec.tile_height,
-                              z, z+m_spec.tile_depth, data);
+                              z, z+m_spec.tile_depth,
+                              0, m_spec.nchannels, data);
 }
 
 
@@ -595,7 +629,22 @@ bool
 OpenEXRInput::read_native_tiles (int xbegin, int xend, int ybegin, int yend,
                                  int zbegin, int zend, void *data)
 {
-    // std::cerr << "openexr rnt " << xbegin << ' ' << xend << ' ' << ybegin << ' ' << yend << "\n";
+    return read_native_tiles (xbegin, xend, ybegin, yend, zbegin, zend,
+                              0, m_spec.nchannels, data);
+}
+
+
+
+bool
+OpenEXRInput::read_native_tiles (int xbegin, int xend, int ybegin, int yend,
+                                 int zbegin, int zend, 
+                                 int firstchan, int nchans, void *data)
+{
+#if 0
+    std::cerr << "openexr rnt " << xbegin << ' ' << xend << ' ' << ybegin 
+              << ' ' << yend << ", chans " << firstchan 
+              << "-" << (firstchan+nchans-1) << "\n";
+#endif
     if (! m_input_tiled ||
         ! m_spec.valid_tile_range (xbegin, xend, ybegin, yend, zbegin, zend))
         return false;
@@ -605,7 +654,7 @@ OpenEXRInput::read_native_tiles (int xbegin, int xend, int ybegin, int yend,
     // to put the pixels being read, but OpenEXR's frameBuffer.insert()
     // wants where the address of the "virtual framebuffer" for the
     // whole image.
-    size_t pixelbytes = m_spec.pixel_bytes (true);
+    size_t pixelbytes = m_spec.pixel_bytes (firstchan, nchans, true);
     int firstxtile = (xbegin-m_spec.x) / m_spec.tile_width;
     int firstytile = (ybegin-m_spec.y) / m_spec.tile_height;
     // clamp to the image edge
@@ -632,11 +681,11 @@ OpenEXRInput::read_native_tiles (int xbegin, int xend, int ybegin, int yend,
     try {
         Imf::FrameBuffer frameBuffer;
         size_t chanoffset = 0;
-        for (int c = 0;  c < m_spec.nchannels;  ++c) {
+        for (int c = 0;  c < nchans;  ++c) {
             size_t chanbytes = m_spec.channelformats.size() 
-                                  ? m_spec.channelformats[c].size() 
+                                  ? m_spec.channelformats[c+firstchan].size()
                                   : m_spec.format.size();
-            frameBuffer.insert (m_spec.channelnames[c].c_str(),
+            frameBuffer.insert (m_spec.channelnames[c+firstchan].c_str(),
                                 Imf::Slice (m_pixeltype[c],
                                             buf + chanoffset, pixelbytes,
                                             pixelbytes*m_spec.tile_width*nxtiles));

@@ -60,9 +60,22 @@ OIIO_NAMESPACE_ENTER
 
 namespace Filesystem {
 
+/// Return the filename (excluding any directories, but including the
+/// file extension, if any) of a filepath.
+DLLPUBLIC std::string filename (const std::string &filepath);
+
+/// Return the file extension (including the last '.') of a filename or
+/// filepath.
+DLLPUBLIC std::string extension (const std::string &filepath);
+
 /// Return the file extension (just the part after the last '.') of a
-/// filename.
+/// filename or filepath.  DEPRECATED.
 DLLPUBLIC std::string file_extension (const std::string &filepath);
+
+/// Replace the file extension of a filename or filepath. Does not
+/// alter filepath, just returns a new string
+DLLPUBLIC std::string replace_extension (const std::string &filepath, 
+                                         const std::string &new_extension);
 
 /// Turn a searchpath (multiple directory paths separated by ':' or ';')
 /// into a vector<string> containing each individual directory.  If

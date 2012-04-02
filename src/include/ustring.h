@@ -121,6 +121,15 @@
 #ifndef OPENIMAGEIO_USTRING_H
 #define OPENIMAGEIO_USTRING_H
 
+#if defined(_MSC_VER)
+// Ignore warnings about DLL exported classes with member variables that are template classes.
+// This happens with the std::string empty_std_string static member variable of ustring below.
+// Also remove a warning about the strncpy function not being safe and deprecated in MSVC.
+// There is no equivalent safe and portable function and trying to fix this is more trouble than
+// its worth. (see http://stackoverflow.com/questions/858252/alternatives-to-ms-strncpy-s)
+#  pragma warning (disable : 4251 4996)
+#endif
+
 #include <string>
 #include <iostream>
 #include <cstring>
@@ -312,7 +321,7 @@ public:
     /// Cast to int, which is interpreted as testing whether it's not an
     /// empty string.  This allows you to write "if (t)" with the same
     /// semantics as if it were a char*.
-    operator int (void) { return !empty(); }
+    operator int (void) const { return !empty(); }
 
     /// Return a const_iterator that references the first character of
     /// the string.
@@ -619,6 +628,20 @@ class ustringHash
 public:
     size_t operator() (const ustring &s) const { return s.hash(); }
 };
+
+
+
+/// Case-insensitive comparison of ustrings.  For speed, this always
+/// uses a static locale that doesn't require a mutex lock.
+inline bool iequals (ustring a, ustring b) {
+    return a==b || Strutil::iequals(a.string(), b.string());
+}
+inline bool iequals (ustring a, const std::string &b) {
+    return Strutil::iequals(a.string(), b);
+}
+inline bool iequals (const std::string &a, ustring b) {
+    return Strutil::iequals(a, b.string());
+}
 
 
 }

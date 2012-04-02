@@ -51,6 +51,7 @@ using namespace std::tr1;
 #include "strutil.h"
 #include "sysutil.h"
 #include "timer.h"
+#include "optparser.h"
 #include "imageio.h"
 #include "imagebuf.h"
 #include "imagecache.h"
@@ -254,15 +255,15 @@ ImageCacheStatistics::merge (const ImageCacheStatistics &s)
 
 
 
-ImageCacheFile::LevelInfo::LevelInfo (const ImageSpec &spec_)
-    : spec(spec_)
+ImageCacheFile::LevelInfo::LevelInfo (const ImageSpec &spec_,
+                                      const ImageSpec &nativespec_)
+    : spec(spec_), nativespec(nativespec_)
 {
     full_pixel_range = (spec.x == spec.full_x && spec.y == spec.full_y &&
                         spec.z == spec.full_z &&
                         spec.width == spec.full_width &&
                         spec.height == spec.full_height &&
                         spec.depth == spec.full_depth);
-    zero_origin = (spec.x == 0 && spec.y == 0 && spec.z == 0);
     onetile = (spec.width <= spec.tile_width &&
                spec.height <= spec.tile_height &&
                spec.depth <= spec.tile_depth);
@@ -310,7 +311,7 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
         return false;
 
     m_input.reset (ImageInput::create (m_filename.c_str(),
-                                       m_imagecache.searchpath().c_str()));
+                                       m_imagecache.plugin_searchpath().c_str()));
     if (! m_input) {
         imagecache().error ("%s", OIIO_NAMESPACE::geterror().c_str());
         m_broken = true;
@@ -318,12 +319,13 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
         return false;
     }
 
-    ImageSpec tempspec;
+    ImageSpec nativespec, tempspec;
     m_broken = false;
     bool ok = true;
     for (int tries = 0; tries <= imagecache().failure_retries(); ++tries) {
-        ok = m_input->open (m_filename.c_str(), tempspec);
+        ok = m_input->open (m_filename.c_str(), nativespec);
         if (ok) {
+            tempspec = nativespec;
             if (tries)   // succeeded, but only after a failure!
                 ++thread_info->m_stats.file_retry_success;
             (void) m_input->geterror ();  // Eat the errors
@@ -356,14 +358,37 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
     do {
         m_subimages.resize (nsubimages+1);
         SubimageInfo &si (subimageinfo(nsubimages));
-        si.volume = (tempspec.depth > 1 || tempspec.full_depth > 1);
         int nmip = 0;
         do {
+            tempspec = nativespec;
+            if (nmip == 0) {
+                // Things to do on MIP level 0, i.e. once per subimage
+                si.volume = (tempspec.depth > 1 || tempspec.full_depth > 1);
+                si.full_pixel_range = (tempspec.x == tempspec.full_x &&
+                                       tempspec.y == tempspec.full_y &&
+                                       tempspec.z == tempspec.full_z &&
+                                       tempspec.width == tempspec.full_width &&
+                                       tempspec.height == tempspec.full_height &&
+                                       tempspec.depth == tempspec.full_depth);
+                if (! si.full_pixel_range) {
+                    si.sscale = float(tempspec.full_width) / tempspec.width;
+                    si.soffset = float(tempspec.full_x-tempspec.x) / tempspec.width;
+                    si.tscale = float(tempspec.full_height) / tempspec.height;
+                    si.toffset = float(tempspec.full_y-tempspec.y) / tempspec.height;
+                } else {
+                    si.sscale = si.tscale = 1.0f;
+                    si.soffset = si.toffset = 0.0f;
+                }
+            }
             if (tempspec.tile_width == 0 || tempspec.tile_height == 0) {
                 si.untiled = true;
                 if (imagecache().autotile()) {
                     // Automatically make it appear as if it's tiled
-                    tempspec.tile_width = imagecache().autotile();
+                    if (imagecache().autoscanline()) {
+                        tempspec.tile_width = pow2roundup (tempspec.width);
+                    } else {
+                        tempspec.tile_width = imagecache().autotile();
+                    }
                     tempspec.tile_height = imagecache().autotile();
                     if (tempspec.depth > 1)
                         tempspec.tile_depth = imagecache().autotile();
@@ -371,9 +396,9 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
                         tempspec.tile_depth = 1;
                 } else {
                     // Don't auto-tile -- which really means, make it look like
-                    // a single tile that's as big as the whole image
-                    // FIXME -- is there a good reason to round up pow 2 here?
-                    // Or does that just end up wasting space?
+                    // a single tile that's as big as the whole image.
+                    // We round to a power of 2 because the texture system
+                    // currently requires power of 2 tile sizes.
                     tempspec.tile_width = pow2roundup (tempspec.width);
                     tempspec.tile_height = pow2roundup (tempspec.height);
                     tempspec.tile_depth = pow2roundup(tempspec.depth);
@@ -381,7 +406,7 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
             }
             thread_info->m_stats.files_totalsize += tempspec.image_bytes();
             // All MIP levels need the same number of channels
-            if (nmip > 1 && tempspec.nchannels != spec(nsubimages,0).nchannels) {
+            if (nmip > 0 && tempspec.nchannels != spec(nsubimages,0).nchannels) {
                 // No idea what to do with a subimage that doesn't have the
                 // same number of channels as the others, so just skip it.
                 close ();
@@ -389,10 +414,10 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
                 invalidate_spec ();
                 return false;
             }
-            LevelInfo levelinfo (tempspec);
+            LevelInfo levelinfo (tempspec, nativespec);
             si.levels.push_back (levelinfo);
             ++nmip;
-        } while (m_input->seek_subimage (nsubimages, nmip, tempspec));
+        } while (m_input->seek_subimage (nsubimages, nmip, nativespec));
 
         // Special work for non-MIPmapped images -- but only if "automip"
         // is on, it's a non-mipmapped image, and it doesn't have a
@@ -419,7 +444,11 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
                 s.full_height = h;
                 s.full_depth = d;
                 if (imagecache().autotile()) {
-                    s.tile_width = std::min (imagecache().autotile(), w);
+                    if (imagecache().autoscanline()) {
+                       s.tile_width = w;
+                    } else {
+                       s.tile_width = std::min (imagecache().autotile(), w);
+                    }
                     s.tile_height = std::min (imagecache().autotile(), h);
                     s.tile_depth = std::min (imagecache().autotile(), d);
                 } else {
@@ -432,7 +461,7 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
                 s.tile_height = pow2roundup (s.tile_height);
                 s.tile_depth = pow2roundup (s.tile_depth);
                 ++nmip;
-                LevelInfo levelinfo (s);
+                LevelInfo levelinfo (s, s);
                 si.levels.push_back (levelinfo);
             }
         }
@@ -454,7 +483,7 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
         }
 
         ++nsubimages;
-    } while (m_input->seek_subimage (nsubimages, 0, tempspec));
+    } while (m_input->seek_subimage (nsubimages, 0, nativespec));
     ASSERT ((size_t)nsubimages == m_subimages.size());
 
     const ImageSpec &spec (this->spec(0,0));
@@ -490,7 +519,7 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
     }
 
     if ((p = spec.find_attribute ("wrapmodes", TypeDesc::STRING))) {
-        const char *wrapmodes = (const char *)p->data();
+        const char *wrapmodes = *(const char **)p->data();
         TextureOpt::parse_wrapmodes (wrapmodes, m_swrap, m_twrap);
         m_rwrap = m_swrap;
         // FIXME(volume) -- rwrap
@@ -534,11 +563,18 @@ ImageCacheFile::open (ImageCachePerThreadInfo *thread_info)
     // FIXME -- compute Mtex, Mras
 
     // See if there's a SHA-1 hash in the image description
-    std::string desc = spec.get_string_attribute ("ImageDescription");
-    const char *prefix = "SHA-1=";
-    size_t found = desc.rfind (prefix);
-    if (found != std::string::npos)
-        m_fingerprint = ustring (desc, found+strlen(prefix), 40);
+    std::string fing = spec.get_string_attribute ("oiio:SHA-1");
+    if (fing.length()) {
+        m_fingerprint = ustring(fing);
+    } else {
+        // If there was no "oiio:SHA-1" attribute, search for it as
+        // part of the ImageDescription.
+        std::string desc = spec.get_string_attribute ("ImageDescription");
+        const char *prefix = "SHA-1=";
+        size_t found = desc.rfind (prefix);
+        if (found != std::string::npos)
+            m_fingerprint = ustring (desc, found+strlen(prefix), 40);
+    }
 
     m_datatype = TypeDesc::FLOAT;
     if (! m_imagecache.forcefloat()) {
@@ -891,18 +927,7 @@ ImageCacheFile::invalidate ()
     m_broken = false;
     m_fingerprint.clear ();
     duplicate (NULL);
-#if 0
-    // Old code
-    // FIXME -- why do we need to reopen here?  Why reload the spec?
-    // LG thinks this was  broken because we still had m_subimages intact
-    // but still set m_validspec=true.  Weird, and led to subtle bugs.
-    open (imagecache().get_perthread_info());  // Force reload of spec
-    close ();
-    if (m_broken)
-        m_subimages.clear ();
-    m_validspec = false;  // force it to read next time
-    m_broken = false;
-#endif
+
     // Eat any errors that occurred in the open/close
     while (! imagecache().geterror().empty())
         ;
@@ -973,7 +998,7 @@ ImageCacheImpl::find_file (ustring filename,
             // but the SAME pixels?  It can happen!  Bad user, bad!  But
             // let's save them from their own foolishness.
             bool was_duplicate = false;
-            if (tf->fingerprint ()) {
+            if (tf->fingerprint() && m_deduplicate) {
                 // std::cerr << filename << " hash=" << tf->fingerprint() << "\n";
                 ImageCacheFile *dup = find_fingerprint (tf->fingerprint(), tf);
                 if (dup != tf) {
@@ -1233,11 +1258,13 @@ ImageCacheImpl::init ()
     m_max_open_files = 100;
     m_max_memory_bytes = 256 * 1024 * 1024;   // 256 MB default cache size
     m_autotile = 0;
+    m_autoscanline = false;
     m_automip = false;
     m_forcefloat = false;
     m_accept_untiled = true;
     m_accept_unmipped = true;
     m_read_before_insert = false;
+    m_deduplicate = true;
     m_failure_retries = 0;
     m_latlong_y_up_default = true;
     m_Mw2c.makeIdentity();
@@ -1251,6 +1278,11 @@ ImageCacheImpl::init ()
     m_stat_open_files_peak = 0;
     m_tilemutex_holder = NULL;
     m_filemutex_holder = NULL;
+
+    // Allow environment variable to override default options
+    const char *options = getenv ("OPENIMAGEIO_IMAGECACHE_OPTIONS");
+    if (options)
+        attribute ("options", options);
 }
 
 
@@ -1529,12 +1561,38 @@ ImageCacheImpl::printstats () const
 
 
 
+void
+ImageCacheImpl::reset_stats ()
+{
+    {
+        lock_guard lock (m_perthread_info_mutex);
+        for (size_t i = 0;  i < m_all_perthread_info.size();  ++i)
+            m_all_perthread_info[i]->m_stats.init ();
+    }
+
+    {
+        ic_read_lock fileguard (m_filemutex);
+        for (FilenameMap::const_iterator f = m_files.begin(); f != m_files.end(); ++f) {
+            const ImageCacheFileRef &file (f->second);
+            file->m_timesopened = 0;
+            file->m_tilesread = 0;
+            file->m_bytesread = 0;
+            file->m_iotime = 0;
+        }
+    }
+}
+
+
+
 bool
 ImageCacheImpl::attribute (const std::string &name, TypeDesc type,
                            const void *val)
 {
     bool do_invalidate = false;
     bool force_invalidate = false;
+    if (name == "options" && type == TypeDesc::STRING) {
+        return optparser (*this, *(const char **)val);
+    }
     if (name == "max_open_files" && type == TypeDesc::INT) {
         m_max_open_files = *(const int *)val;
     }
@@ -1565,6 +1623,9 @@ ImageCacheImpl::attribute (const std::string &name, TypeDesc type,
             force_invalidate = true;
         }
     }
+    else if (name == "plugin_searchpath" && type == TypeDesc::STRING) {
+        m_plugin_searchpath = std::string (*(const char **)val);
+    }
     else if (name == "statistics:level" && type == TypeDesc::INT) {
         m_statslevel = *(const int *)val;
     }
@@ -1579,6 +1640,13 @@ ImageCacheImpl::attribute (const std::string &name, TypeDesc type,
 #endif
         if (a != m_autotile) {
             m_autotile = a;
+            do_invalidate = true;
+        }
+    }
+    else if (name == "autoscanline" && type == TypeDesc::INT) {
+        int a = *(const int *)val;
+        if (a != m_autoscanline) {
+            m_autoscanline = a;
             do_invalidate = true;
         }
     }
@@ -1614,6 +1682,13 @@ ImageCacheImpl::attribute (const std::string &name, TypeDesc type,
         int r = *(const int *)val;
         if (r != m_read_before_insert) {
             m_read_before_insert = r;
+            do_invalidate = true;
+        }
+    }
+    else if (name == "deduplicate" && type == TypeDesc::INT) {
+        int r = *(const int *)val;
+        if (r != m_deduplicate) {
+            m_deduplicate = r;
             do_invalidate = true;
         }
     }
@@ -1653,16 +1728,22 @@ ImageCacheImpl::getattribute (const std::string &name, TypeDesc type,
     ATTR_DECODE ("max_memory_MB", int, m_max_memory_bytes/(1024*1024));
     ATTR_DECODE ("statistics:level", int, m_statslevel);
     ATTR_DECODE ("autotile", int, m_autotile);
+    ATTR_DECODE ("autoscanline", int, m_autoscanline);
     ATTR_DECODE ("automip", int, m_automip);
     ATTR_DECODE ("forcefloat", int, m_forcefloat);
     ATTR_DECODE ("accept_untiled", int, m_accept_untiled);
     ATTR_DECODE ("accept_unmipped", int, m_accept_unmipped);
     ATTR_DECODE ("read_before_insert", int, m_read_before_insert);
+    ATTR_DECODE ("deduplicate", int, m_deduplicate);
     ATTR_DECODE ("failure_retries", int, m_failure_retries);
 
     // The cases that don't fit in the simple ATTR_DECODE scheme
     if (name == "searchpath" && type == TypeDesc::STRING) {
         *(ustring *)val = m_searchpath;
+        return true;
+    }
+    if (name == "plugin_searchpath" && type == TypeDesc::STRING) {
+        *(ustring *)val = m_plugin_searchpath;
         return true;
     }
     if (name == "worldtocommon" && (type == TypeDesc::TypeMatrix ||
@@ -1996,9 +2077,9 @@ ImageCacheImpl::get_image_info (ustring filename, int subimage, int miplevel,
 
 bool
 ImageCacheImpl::get_imagespec (ustring filename, ImageSpec &spec,
-                               int subimage, int miplevel)
+                               int subimage, int miplevel, bool native)
 {
-    const ImageSpec *specptr = imagespec (filename, subimage, miplevel);
+    const ImageSpec *specptr = imagespec (filename, subimage, miplevel, native);
     if (specptr) {
         spec = *specptr;
         return true;
@@ -2010,7 +2091,8 @@ ImageCacheImpl::get_imagespec (ustring filename, ImageSpec &spec,
 
 
 const ImageSpec *
-ImageCacheImpl::imagespec (ustring filename, int subimage, int miplevel)
+ImageCacheImpl::imagespec (ustring filename, int subimage, int miplevel,
+                           bool native)
 {
     ImageCachePerThreadInfo *thread_info = get_perthread_info ();
     ImageCacheFile *file = find_file (filename, thread_info);
@@ -2031,7 +2113,8 @@ ImageCacheImpl::imagespec (ustring filename, int subimage, int miplevel)
                file->miplevels(subimage));
         return NULL;
     }
-    const ImageSpec *spec = & file->spec (subimage, miplevel);
+    const ImageSpec *spec = native ? &file->nativespec (subimage,miplevel)
+                                   : &file->spec (subimage, miplevel);
     return spec;
 }
 
@@ -2231,6 +2314,14 @@ ImageCacheImpl::invalidate (ustring filename)
         file->invalidate ();
     }
 
+    // Remove the fingerprint corresponding to this file
+    {
+        spin_lock lock (m_fingerprints_mutex);
+        FilenameMap::iterator f = m_fingerprints.find (filename);
+        if (f != m_fingerprints.end())
+            m_fingerprints.erase (f);
+    }
+
     // Mark the per-thread microcaches as invalid
     lock_guard lock (m_perthread_info_mutex);
     for (size_t i = 0;  i < m_all_perthread_info.size();  ++i)
@@ -2279,8 +2370,6 @@ ImageCacheImpl::invalidate_all (bool force)
         // fprintf (stderr, "Invalidating %s\n", f.c_str());
         invalidate (f);
     }
-
-    clear_fingerprints ();
 
     // Mark the per-thread microcaches as invalid
     lock_guard lock (m_perthread_info_mutex);

@@ -63,7 +63,7 @@ using namespace ImageBufAlgo;
 
 
 ImageRec::ImageRec (ImageRec &img, int subimage_to_copy,
-                    bool copy_miplevels, bool writable, bool copy_pixels)
+                    int miplevel_to_copy, bool writable, bool copy_pixels)
     : m_name(img.name()), m_elaborated(true),
       m_metadata_modified(false), m_pixels_modified(false),
       m_imagecache(img.m_imagecache)
@@ -73,18 +73,22 @@ ImageRec::ImageRec (ImageRec &img, int subimage_to_copy,
     int subimages = (subimage_to_copy < 0) ? img.subimages() : 1;
     m_subimages.resize (subimages);
     for (int s = 0;  s < subimages;  ++s) {
-        int miplevels = copy_miplevels ? img.miplevels(s+first_subimage) : 1;
+        int srcsub = s + first_subimage;
+        int first_miplevel = std::max (0, miplevel_to_copy);
+        int miplevels = (miplevel_to_copy < 0) ? img.miplevels(srcsub) : 1;
         m_subimages[s].m_miplevels.resize (miplevels);
         m_subimages[s].m_specs.resize (miplevels);
         for (int m = 0;  m < miplevels;  ++m) {
-            const ImageBuf &srcib (img(s+first_subimage,m));
-            const ImageSpec &srcspec (*img.spec(s+first_subimage,m));
+            int srcmip = m + first_miplevel;
+            const ImageBuf &srcib (img(srcsub,srcmip));
+            const ImageSpec &srcspec (*img.spec(srcsub,srcmip));
             ImageBuf *ib = NULL;
             if (writable || img.pixels_modified() || !copy_pixels) {
                 // Make our own copy of the pixels
                 ib = new ImageBuf (img.name(), srcspec);
                 if (copy_pixels) {
                     ImageBuf::ConstIterator<float> src (srcib);
+                    ASSERT (src.rawptr());
                     ImageBuf::Iterator<float> dst (*ib);
                     int nchans = ib->nchannels();
                     while (! src.done()) {
@@ -98,7 +102,7 @@ ImageRec::ImageRec (ImageRec &img, int subimage_to_copy,
                 // The other image is not modified, and we don't need to be
                 // writable, either.
                 ib = new ImageBuf (img.name(), srcib.imagecache());
-                bool ok = ib->read (s+first_subimage, m);
+                bool ok = ib->read (srcsub, srcmip);
                 ASSERT (ok);
             }
             m_subimages[s].m_miplevels[m].reset (ib);
@@ -109,7 +113,7 @@ ImageRec::ImageRec (ImageRec &img, int subimage_to_copy,
 
 
 
-ImageRec::ImageRec (const std::string &name, ImageSpec &spec,
+ImageRec::ImageRec (const std::string &name, const ImageSpec &spec,
                     ImageCache *imagecache)
     : m_name(name), m_elaborated(true),
       m_metadata_modified(false), m_pixels_modified(true),
@@ -157,6 +161,13 @@ ImageRec::read ()
             ASSERT (ok);
             m_subimages[s].m_miplevels[m].reset (ib);
             m_subimages[s].m_specs[m] = ib->spec();
+            // For ImageRec purposes, we need to restore a few of the
+            // native settings.
+            const ImageSpec &nativespec (ib->nativespec());
+            // m_subimages[s].m_specs[m].format = nativespec.format;
+            m_subimages[s].m_specs[m].tile_width  = nativespec.tile_width;
+            m_subimages[s].m_specs[m].tile_height = nativespec.tile_height;
+            m_subimages[s].m_specs[m].tile_depth  = nativespec.tile_depth;
         }
     }
 

@@ -34,8 +34,10 @@
 #include <vector>
 #include <iostream>
 #include <cmath>
+#include <sstream>
 #include <boost/tokenizer.hpp>
 #include <boost/foreach.hpp>
+#include <boost/algorithm/string.hpp>
 
 #include "dassert.h"
 
@@ -247,6 +249,91 @@ Strutil::unescape_chars (const std::string &escaped)
         }
     }
     return s;
+}
+
+
+
+std::string
+Strutil::wordwrap (std::string src, int columns, int prefix)
+{
+    std::ostringstream out;
+    if (columns < prefix+20)
+        return src;   // give up, no way to make it wrap
+    columns -= prefix;  // now columns is the real width we have to work with
+    while ((int)src.length() > columns) {
+        // break the string in two
+        size_t breakpoint = src.find_last_of (' ', columns);
+        if (breakpoint == std::string::npos)
+            breakpoint = columns;
+        out << src.substr(0, breakpoint) << "\n" << std::string (prefix, ' ');
+        src = src.substr (breakpoint);
+        while (src[0] == ' ')
+            src.erase (0, 1);
+    }
+    out << src;
+    return out.str();
+}
+
+
+
+namespace {
+static std::locale loc = std::locale::classic();
+}
+
+
+bool
+Strutil::iequals (const std::string &a, const std::string &b)
+{
+    return boost::algorithm::iequals (a, b, loc);
+}
+
+
+bool
+Strutil::iequals (const char *a, const char *b)
+{
+    return boost::algorithm::iequals (a, b, loc);
+}
+
+
+bool
+Strutil::istarts_with (const std::string &a, const std::string &b)
+{
+    return boost::algorithm::istarts_with (a, b, loc);
+}
+
+
+bool
+Strutil::istarts_with (const char *a, const char *b)
+{
+    return boost::algorithm::istarts_with (a, b, loc);
+}
+
+
+bool
+Strutil::iends_with (const std::string &a, const std::string &b)
+{
+    return boost::algorithm::iends_with (a, b, loc);
+}
+
+
+bool
+Strutil::iends_with (const char *a, const char *b)
+{
+    return boost::algorithm::iends_with (a, b, loc);
+}
+
+
+void
+Strutil::to_lower (std::string &a)
+{
+    boost::algorithm::to_lower (a, loc);
+}
+
+
+void
+Strutil::to_upper (std::string &a)
+{
+    boost::algorithm::to_upper (a, loc);
 }
 
 

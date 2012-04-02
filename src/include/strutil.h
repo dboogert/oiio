@@ -44,6 +44,7 @@
 #include <string>
 #include <cstring>
 #include <map>
+#include <sys/types.h>   // to safely get off_t
 
 #include "export.h"
 #include "version.h"
@@ -118,6 +119,14 @@ std::string DLLPUBLIC escape_chars (const std::string &unescaped);
 /// and collapse them into the 'real' characters.
 std::string DLLPUBLIC unescape_chars (const std::string &escaped);
 
+/// Word-wrap string 'src' to no more than columns width, splitting at
+/// space characters.  It assumes that 'prefix' characters are already
+/// printed, and furthermore, if it should need to wrap, it prefixes that
+/// number of spaces in front of subsequent lines.  By illustration, 
+/// wordwrap("0 1 2 3 4 5 6 7 8", 4, 10) should return:
+/// "0 1 2\n    3 4 5\n    6 7 8"
+std::string DLLPUBLIC wordwrap (std::string src, int columns=80, int prefix=0);
+
 /// Hash a string without pre-known length.  We use the Jenkins
 /// one-at-a-time hash (http://en.wikipedia.org/wiki/Jenkins_hash_function),
 /// which seems to be a good speed/quality/requirements compromise.
@@ -137,6 +146,36 @@ strhash (const char *s)
     h += h << 15;
     return h;
 }
+
+
+
+/// Case-insensitive comparison of strings.  For speed, this always uses
+/// a static locale that doesn't require a mutex.
+bool DLLPUBLIC iequals (const std::string &a, const std::string &b);
+bool DLLPUBLIC iequals (const char *a, const char *b);
+
+/// Does 'a' start with the string 'b', with a case-insensitive comparison?
+/// For speed, this always uses a static locale that doesn't require a mutex.
+bool DLLPUBLIC istarts_with (const std::string &a, const std::string &b);
+bool DLLPUBLIC istarts_with (const char *a, const char *b);
+
+/// Does 'a' end with the string 'b', with a case-insensitive comparison?
+/// For speed, this always uses a static locale that doesn't require a mutex.
+bool DLLPUBLIC iends_with (const std::string &a, const std::string &b);
+bool DLLPUBLIC iends_with (const char *a, const char *b);
+
+/// Does 'a' end with the string 'b', with a case-insensitive comparison?
+/// For speed, this always uses a static locale that doesn't require a mutex.
+bool DLLPUBLIC iends_with (const std::string &a, const std::string &b);
+bool DLLPUBLIC iends_with (const char *a, const char *b);
+
+/// Convert to upper case, faster than std::toupper because we use
+/// a static locale that doesn't require a mutex lock.
+void DLLPUBLIC to_lower (std::string &a);
+
+/// Convert to upper case, faster than std::toupper because we use
+/// a static locale that doesn't require a mutex lock.
+void DLLPUBLIC to_upper (std::string &a);
 
 
 

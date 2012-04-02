@@ -32,6 +32,15 @@
 #ifndef OPENIMAGEIO_IMAGEVIEWER_H
 #define OPENIMAGEIO_IMAGEVIEWER_H
 
+#if defined (_MSC_VER)
+// Ignore warnings about conditional expressions that always evaluate true
+// on a given platform but may evaluate differently on another. There's
+// nothing wrong with such conditionals.
+// Also ignore warnings about not being able to generate default assignment
+// operators for some Qt classes included in headers below.
+#  pragma warning (disable : 4127 4512)
+#endif
+
 // included to remove std::min/std::max errors
 #include "osdep.h"
 
@@ -40,13 +49,31 @@
 // This needs to be included before GL.h
 #include <glew.h>
 
-#include <QtGui>
-#include <QGLWidget>
+#include <QtGui/QAction>
+#include <QtGui/QCheckBox>
+#include <QtGui/QDialog>
+#include <QtGui/QMainWindow>
+#include <QtOpenGL/QGLWidget>
+
+#ifndef QT_NO_PRINTER
+#include <QtGui/QPrinter>
+#endif
 
 #include "imageio.h"
 #include "imagebuf.h"
 
 OIIO_NAMESPACE_USING;
+
+class QComboBox;
+class QLabel;
+class QMenu;
+class QMenuBar;
+class QProgressBar;
+class QPushButton;
+class QSpinBox;
+class QScrollArea;
+class QStatusBar;
+class QVBoxLayout;
 
 class IvMainWindow;
 class IvInfoWindow;
@@ -280,13 +307,9 @@ private slots:
     void sortByFileDate();              ///< Sort images by file Date Stamp.
     void sortReverse();                 ///< Reverse the current order of images
     void slideShow();                   ///< Starts slide show
-    void slide1();                      ///< Slide mode with 1 s interval
-    void slide5();                      ///< Slide mode with 5 s interval
-    void slide15();                     ///< Slide mode with 15 s interval
-    void slide30();                     ///< Slide mode with 30 s interval
-    void slide60();                     ///< Slide mode with 60 s interval
     void slideLoop();                   ///< Slide show in a loop
     void slideNoLoop();                 ///< Slide show without loop
+    void setSlideShowDuration(int seconds); ///< Set the slide show duration in seconds
     void slideImages();                 ///< Slide show - move to next image
     void showInfoWindow();              ///< View extended info on image
     void showPixelviewWindow();         ///< View closeup pixel view
@@ -347,8 +370,7 @@ private:
     QAction *nextImageAct, *prevImageAct, *toggleImageAct;
     QAction *sortByNameAct, *sortByPathAct, *sortReverseAct;
     QAction *sortByImageDateAct, *sortByFileDateAct;
-    QAction *slideShowAct, *slide1Act, *slide5Act, *slide15Act;
-    QAction *slide30Act, *slide60Act, *slideLoopAct, *slideNoLoopAct;
+    QAction *slideShowAct, *slideLoopAct, *slideNoLoopAct;
     QAction *showInfoWindowAct;
     QAction *editPreferencesAct;
     QAction *showPixelviewWindowAct;
@@ -366,6 +388,8 @@ private:
     QCheckBox *autoMipmap;
     QLabel   *maxMemoryICLabel;
     QSpinBox *maxMemoryIC;
+    QLabel   *slideShowDurationLabel;
+    QSpinBox *slideShowDuration;
 
     std::vector<IvImage *> m_images;  ///< List of images
     int m_current_image;              ///< Index of current image, -1 if none
@@ -603,6 +627,9 @@ private:
     /// Loads the given patch of the image, but first figures if it's already
     /// been loaded.
     void load_texture (int x, int y, int width, int height, float percent);
+    
+    /// Destroys shaders and selects fixed-function pipeline
+    void create_shaders_abort (void);
 };
 
 #endif // OPENIMAGEIO_IMAGEVIEWER_H

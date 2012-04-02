@@ -1,25 +1,6 @@
 #!/usr/bin/python 
 
-import os
-import sys
-
-path = ""
-cmdpath = ""
-command = ""
-if len(sys.argv) > 2 :
-    os.chdir (sys.argv[1])
-    path = sys.argv[2] + "/"
-    cmdpath = sys.argv[2] + "/"
-sys.path = [".."] + sys.path
-import runtest
-
-
-# Start off
-hi = "echo hi"
-command = hi + "> out.txt"
-
-imagedir = "../../../libtiffpic"
-
+imagedir = parent + "/libtiffpic"
 
 # caspian.tif	279x220 64-bit floating point (deflate) Caspian Sea from space
 #   I can't get this to work with OIIO, but I can't get it to read with 
@@ -30,10 +11,10 @@ imagedir = "../../../libtiffpic"
 #    This tests 1-bit images, and packbits compression
 # cramps-tile.tif	256x256 tiled version of cramps.tif (no compression)
 #    Tests tiled images (especially tiled 1-bit) -- compare it to cramps
-command = command + "; " + runtest.rw_command (imagedir, "cramps.tif", path)
-command = command + "; " + runtest.rw_command (imagedir, "cramps-tile.tif", path)
-command = command + "; " + runtest.diff_command (imagedir+"/cramps-tile.tif",
-                                                 imagedir+"/cramps.tif", path)
+command += rw_command (imagedir, "cramps.tif")
+command += rw_command (imagedir, "cramps-tile.tif")
+command += diff_command (imagedir+"/cramps-tile.tif",
+                                          imagedir+"/cramps.tif")
 
 # dscf0013.tif	640x480 YCbCr digital camera image which lacks Reference
 # 		Black/White values. Contains EXIF SubIFD. No compression.
@@ -43,14 +24,14 @@ command = command + "; " + runtest.diff_command (imagedir+"/cramps-tile.tif",
 # FIXME - we read the pixel data fine, but we fail to recognize that
 #   differing XResolution and YResolution imply a non-square pixel
 #   aspect ratio, and iv fails to display it well for this reason.
-command = command + "; " + runtest.rw_command (imagedir, "fax2d.tif", path)
+command += rw_command (imagedir, "fax2d.tif")
 
 # g3test.tif	TIFF equivalent of g3test.g3 created by fax2tiff
-command = command + "; " + runtest.rw_command (imagedir, "g3test.tif", path)
+command += rw_command (imagedir, "g3test.tif")
 # FIXME - same aspect ratio issue as fax2d.tif
 
 # jello.tif	256x192 8-bit RGB (packbits palette) Paul Heckbert "jello"
-command = command + "; " + runtest.rw_command (imagedir, "jello.tif", path)
+command += rw_command (imagedir, "jello.tif")
 
 # ladoga.tif	158x118 16-bit unsigned, single band, deflate
 # NOTE -- I have no idea if we read this correctly.  Neither ImageMagick
@@ -65,7 +46,7 @@ command = command + "; " + runtest.rw_command (imagedir, "jello.tif", path)
 # 		No compression.
 # FIXME? - we don't seem to recognize additional Exif data that's in the
 #    'Maker Note', which includes GainControl
-command = command + "; " + runtest.rw_command (imagedir, "pc260001.tif", path)
+command += rw_command (imagedir, "pc260001.tif")
 
 # quad-jpeg.tif	512x384 8-bit YCbCr (jpeg) version of quad-lzw.tif
 #  FIXME -- we don't handle this (YCbCr? jpeg?)
@@ -73,13 +54,13 @@ command = command + "; " + runtest.rw_command (imagedir, "pc260001.tif", path)
 
 # quad-lzw.tif	512x384 8-bit RGB (lzw) "quadric surfaces"
 # quad-tile.tif	512x384 tiled version of quad-lzw.tif (lzw)
-command = command + "; " + runtest.rw_command (imagedir, "quad-lzw.tif", path)
-command = command + "; " + runtest.rw_command (imagedir, "quad-tile.tif", path)
-command = command + "; " + runtest.diff_command (imagedir+"/quad-tile.tif",
-                                                 imagedir+"/quad-lzw.tif", path)
+command += rw_command (imagedir, "quad-lzw.tif")
+command += rw_command (imagedir, "quad-tile.tif")
+command += diff_command (imagedir+"/quad-tile.tif",
+                                          imagedir+"/quad-lzw.tif")
 
 # strike.tif	256x200 8-bit RGBA (lzw) "bowling pins" from Pixar
-command = command + "; " + runtest.rw_command (imagedir, "strike.tif", path)
+command += rw_command (imagedir, "strike.tif")
 
 # text.tif	1512x359 4-bit b&w (thunderscan) am-express credit card
 #  FIXME -- we don't get this right
@@ -92,8 +73,7 @@ command = command + "; " + runtest.rw_command (imagedir, "strike.tif", path)
 #   considered a deprecated format, not supported by libtiff
 
 # oxford.tif	601x81 8-bit RGB (lzw) screendump off oxford
-#  FIXME -- we read this ok, but something goes wrong on the iconvert!
-command = command + "; " + runtest.rw_command (imagedir, "oxford.tif", path, 0)
+command += rw_command (imagedir, "oxford.tif", 0)
 
 # The other images are from Hewlett Packard and exemplify the use of the
 # HalftoneHints tag (in their words):
@@ -108,18 +88,3 @@ command = command + "; " + runtest.rw_command (imagedir, "oxford.tif", path, 0)
 #
 # NOTE -- OIIO appears to read this fine, but I'm really not sure how to
 #    judge if it's "correct"
-
-
-
-# Outputs to check against references
-outputs = [ "out.txt" ]
-
-# Files that need to be cleaned up, IN ADDITION to outputs
-cleanfiles = [ "cramps-tile.tif", "g3test.tif", "quad-lzw.tif",
-               "cramps.tif", "jello.tif", "quad-tile.tif", "strike.tif",
-               "fax2d.tif", "pc260001.tif" ]
-
-
-# boilerplate
-ret = runtest.runtest (command, outputs, cleanfiles)
-sys.exit (ret)

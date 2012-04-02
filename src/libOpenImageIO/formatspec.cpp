@@ -34,11 +34,8 @@
 
 #include <half.h>
 
-#include <boost/algorithm/string.hpp>
 #include <boost/tokenizer.hpp>
 #include <boost/foreach.hpp>
-
-using boost::algorithm::iequals;
 
 #include "dassert.h"
 #include "typedesc.h"
@@ -129,22 +126,6 @@ set_default_quantize (TypeDesc format,
         break;
     default: ASSERT(0);
     }
-}
-
-
-
-QuantizationSpec
-    QuantizationSpec::quantize_default (std::numeric_limits<stride_t>::min(),
-                                        std::numeric_limits<stride_t>::min(),
-                                        std::numeric_limits<stride_t>::min(),
-                                        std::numeric_limits<stride_t>::min());
-
-
-
-QuantizationSpec::QuantizationSpec (TypeDesc _type)
-{
-    set_default_quantize (_type, quant_black, quant_white,
-                          quant_min, quant_max);
 }
 
 
@@ -260,6 +241,19 @@ ImageSpec::default_channel_names ()
 
 
 size_t
+ImageSpec::channel_bytes (int chan, bool native) const
+{
+    if (chan >= nchannels)
+        return 0;
+    if (!native || channelformats.empty())
+        return format.size();
+    else
+        return channelformats[chan].size();
+}
+
+
+
+size_t
 ImageSpec::pixel_bytes (bool native) const
 {
     if (nchannels < 0)
@@ -269,6 +263,24 @@ ImageSpec::pixel_bytes (bool native) const
     else {
         size_t sum = 0;
         for (int i = 0;  i < nchannels;  ++i)
+            sum += channelformats[i].size();
+        return sum;
+    }
+}
+
+
+
+size_t
+ImageSpec::pixel_bytes (int firstchan, int nchans, bool native) const
+{
+    nchans = std::min (nchans, nchannels-firstchan);
+    if (nchans < 0 || firstchan < 0)
+        return 0;
+    if (!native || channelformats.empty())
+        return clamped_mult32 ((size_t)nchans, channel_bytes());
+    else {
+        size_t sum = 0;
+        for (int i = firstchan, e = firstchan+nchans;  i < e;  ++i)
             sum += channelformats[i].size();
         return sum;
     }
@@ -424,7 +436,7 @@ get_attribute_iterator (ImageIOParameterList & attribs,
     } else {
         for(ImageIOParameterList::iterator iter = attribs.begin();
             iter != attribs.end(); ++iter) {
-            if (iequals (iter->name().string(), name) &&
+            if (Strutil::iequals (iter->name().string(), name) &&
                 (searchtype == TypeDesc::UNKNOWN || searchtype == iter->type()))
                 return iter;
         }
@@ -448,7 +460,7 @@ get_attribute_const_iterator (const ImageIOParameterList & attribs,
     } else {
         for(ImageIOParameterList::const_iterator iter = attribs.begin();
             iter != attribs.end(); ++iter) {
-            if (iequals (iter->name().string(), name) &&
+            if (Strutil::iequals (iter->name().string(), name) &&
                 (searchtype == TypeDesc::UNKNOWN || searchtype == iter->type()))
                 return iter;
         }

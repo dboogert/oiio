@@ -56,17 +56,22 @@ static std::vector<std::string> filenames;
 static std::string output_filename = "out.exr";
 static bool verbose = false;
 static int output_xres = 512, output_yres = 512;
+static std::string dataformatname = "half";
 static float sscale = 1, tscale = 1;
 static float blur = 0;
 static float width = 1;
+static std::string wrapmodes ("periodic");
 static int iters = 1;
 static int autotile = 0;
 static bool automip = false;
 static bool test_construction = false;
+static bool test_gettexels = false;
+static bool test_getimagespec = false;
 static TextureSystem *texsys = NULL;
 static std::string searchpath;
 static int blocksize = 1;
 static bool nowarp = false;
+static bool tube = false;
 static bool use_handle = false;
 static float cachesize = -1;
 static int maxfiles = -1;
@@ -77,6 +82,7 @@ static Imath::V3f offset (0,0,0);
 static bool nountiled = false;
 static bool nounmipped = false;
 static bool gray_to_rgb = false;
+static bool resetstats = false;
 void *dummyptr;
 
 
@@ -101,6 +107,8 @@ getargs (int argc, const char *argv[])
                   "--help", &help, "Print help message",
                   "-v", &verbose, "Verbose status messages",
                   "-o %s", &output_filename, "Output test image",
+                  "-d %s", &dataformatname, "Set the output data format to one of:"
+                        "uint8, sint8, uint10, uint12, uint16, sint16, half, float, double",
                   "-res %d %d", &output_xres, &output_yres,
                       "Resolution of output test image",
                   "-iters %d", &iters,
@@ -108,6 +116,7 @@ getargs (int argc, const char *argv[])
                   "--blur %f", &blur, "Add blur to texture lookup",
                   "--width %f", &width, "Multiply filter width of texture lookup",
                   "--fill %f", &fill, "Set fill value for missing channels",
+                  "--wrap %s", &wrapmodes, "Set wrap mode (default, black, clamp, periodic, mirror, overscan)",
                   "--missing %f %f %f", &missing[0], &missing[1], &missing[2],
                         "Specify missing texture color",
                   "--autotile %d", &autotile, "Set auto-tile size for the image cache",
@@ -116,15 +125,19 @@ getargs (int argc, const char *argv[])
                   "--handle", &use_handle, "Use texture handle rather than name lookup",
                   "--searchpath %s", &searchpath, "Search path for files",
                   "--nowarp", &nowarp, "Do not warp the image->texture mapping",
+                  "--tube", &tube, "Make a tube projection",
                   "--cachesize %f", &cachesize, "Set cache size, in MB",
                   "--scale %f", &scalefactor, "Scale intensities",
                   "--maxfiles %d", &maxfiles, "Set maximum open files",
                   "--nountiled", &nountiled, "Reject untiled images",
                   "--nounmipped", &nounmipped, "Reject unmipped images",
                   "--ctr", &test_construction, "Test TextureOpt construction time",
+                  "--gettexels", &test_gettexels, "Test TextureSystem::get_texels",
+                  "--getimagespec", &test_getimagespec, "Test TextureSystem::get_imagespec",
                   "--offset %f %f %f", &offset[0], &offset[1], &offset[2], "Offset texture coordinates",
                   "--scalest %f %f", &sscale, &tscale, "Scale texture lookups (s, t)",
                   "--graytorgb", &gray_to_rgb, "Convert gratscale textures to RGB",
+                  "--resetstats", &resetstats, "Print and reset statistics on each iteration",
                   NULL);
     if (ap.parse (argc, argv) < 0) {
         std::cerr << ap.geterror() << std::endl;
@@ -214,6 +227,31 @@ test_plain_texture ()
               << output_filename << "\n";
     const int nchannels = 4;
     ImageSpec outspec (output_xres, output_yres, nchannels, TypeDesc::HALF);
+    if (! dataformatname.empty()) {
+        if (dataformatname == "uint8")
+            outspec.set_format (TypeDesc::UINT8);
+        else if (dataformatname == "int8")
+            outspec.set_format (TypeDesc::INT8);
+        else if (dataformatname == "uint10") {
+            outspec.attribute ("oiio:BitsPerSample", 10);
+            outspec.set_format (TypeDesc::UINT16);
+        }
+        else if (dataformatname == "uint12") {
+            outspec.attribute ("oiio:BitsPerSample", 12);
+            outspec.set_format (TypeDesc::UINT16);
+        }
+        else if (dataformatname == "uint16")
+            outspec.set_format (TypeDesc::UINT16);
+        else if (dataformatname == "int16")
+            outspec.set_format (TypeDesc::INT16);
+        else if (dataformatname == "half")
+            outspec.set_format (TypeDesc::HALF);
+        else if (dataformatname == "float")
+            outspec.set_format (TypeDesc::FLOAT);
+        else if (dataformatname == "double")
+            outspec.set_format (TypeDesc::DOUBLE);
+        outspec.channelformats.clear ();
+    }
     ImageBuf image (output_filename, outspec);
     ImageBufAlgo::zero (image);
 
@@ -236,10 +274,8 @@ test_plain_texture ()
         opt.missingcolor.init ((float *)&missing, 0);
 //    opt.interpmode = TextureOptions::InterpSmartBicubic;
 //    opt.mipmode = TextureOptions::MipModeAniso;
-    opt.swrap = opt.twrap = TextureOptions::WrapPeriodic;
-//    opt.twrap = TextureOptions::WrapBlack;
+    TextureOptions::parse_wrapmodes (wrapmodes.c_str(), opt.swrap, opt.twrap);
 
-#if 1
     TextureOpt opt1;
     opt1.sblur = blur;
     opt1.tblur = blur;
@@ -249,8 +285,7 @@ test_plain_texture ()
     opt1.fill = localfill;
     if (missing[0] >= 0)
         opt1.missingcolor = (float *)&missing;
-    opt1.swrap = opt1.twrap = TextureOpt::WrapPeriodic;
-#endif
+    TextureOpt::parse_wrapmodes (wrapmodes.c_str(), opt1.swrap, opt1.twrap);
 
     int shadepoints = blocksize*blocksize;
     float *s = ALLOCA (float, shadepoints);
@@ -296,6 +331,29 @@ test_plain_texture ()
                                 dtdx[idx] = 0;
                                 dsdy[idx] = 0;
                                 dtdy[idx] = 1.0f/output_yres * tscale;
+                            } else if (tube) {
+                                float xt = float(x)/output_xres - 0.5f;
+                                float dxt_dx = 1.0f/output_xres;
+                                float yt = float(y)/output_yres - 0.5f;
+                                float dyt_dy = 1.0f/output_yres;
+                                float theta = atan2f (yt, xt);
+                                // See OSL's Dual2 for partial derivs of
+                                // atan2, hypot, and 1/x
+                                float denom = 1.0f / (xt*xt + yt*yt);
+                                float dtheta_dx = yt*dxt_dx * denom;
+                                float dtheta_dy = -xt*dyt_dy * denom;
+                                s[idx] = 4.0f * theta / (2.0f * M_PI);
+                                dsdx[idx] = 4.0f * dtheta_dx / (2.0f * M_PI);
+                                dsdy[idx] = 4.0f * dtheta_dy / (2.0f * M_PI);
+                                float h = hypot(xt,yt);
+                                float dh_dx = xt*dxt_dx / h;
+                                float dh_dy = yt*dyt_dy / h;
+                                h *= M_SQRT2;
+                                dh_dx *= M_SQRT2; dh_dy *= M_SQRT2;
+                                float hinv = 1.0f / h;
+                                t[idx] = hinv;
+                                dtdx[idx] = hinv * (-hinv * dh_dx);
+                                dtdy[idx] = hinv * (-hinv * dh_dy);
                             } else {
                                 Imath::V3f coord = warp ((float)x/output_xres,
                                                          (float)y/output_yres,
@@ -366,6 +424,11 @@ test_plain_texture ()
                     }
                 }
             }
+        }
+
+        if (resetstats) {
+            std::cout << texsys->getstats(2) << "\n";
+            texsys->reset_stats ();
         }
     }
     
@@ -524,6 +587,7 @@ static void
 test_getimagespec_gettexels (ustring filename)
 {
     ImageSpec spec;
+    int miplevel = 0;
     if (! texsys->get_imagespec (filename, 0, spec)) {
         std::cerr << "Could not get spec for " << filename << "\n";
         std::string e = texsys->geterror ();
@@ -531,7 +595,12 @@ test_getimagespec_gettexels (ustring filename)
             std::cerr << "ERROR: " << e << "\n";
         return;
     }
-    int w = spec.width/2, h = spec.height/2;
+
+    if (! test_gettexels)
+        return;
+
+    int w = spec.width / std::max(1,2<<miplevel);
+    int h = spec.height / std::max(1,2<<miplevel);
     ImageSpec postagespec (w, h, spec.nchannels, TypeDesc::FLOAT);
     ImageBuf buf ("postage.exr", postagespec);
     TextureOptions opt;
@@ -539,7 +608,9 @@ test_getimagespec_gettexels (ustring filename)
     if (missing[0] >= 0)
         opt.missingcolor.init ((float *)&missing, 0);
     std::vector<float> tmp (w*h*spec.nchannels);
-    bool ok = texsys->get_texels (filename, opt, 0, w/2, w/2+w, h/2, h/2+h,
+    bool ok = texsys->get_texels (filename, opt, miplevel,
+                                  spec.x+w/2, spec.x+w/2+w,
+                                  spec.y+h/2, spec.y+h/2+h,
                                   0, 1, postagespec.format, &tmp[0]);
     if (! ok)
         std::cerr << texsys->geterror() << "\n";
@@ -590,6 +661,16 @@ main (int argc, const char *argv[])
             dummyptr = &copy;  // This forces the optimizer to keep the loop
         }
         std::cout << "TextureOpt memcpy: " << t() << " ns\n";
+    }
+
+    if (test_getimagespec) {
+        Timer t;
+        ImageSpec spec;
+        ustring filename (filenames[0]);
+        for (int i = 0;  i < iters;  ++i) {
+            texsys->get_imagespec (filename, 0, spec);
+        }
+        iters = 0;
     }
 
     if (iters > 0) {

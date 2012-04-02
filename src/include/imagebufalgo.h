@@ -32,10 +32,23 @@
 #ifndef OPENIMAGEIO_IMAGEBUFALGO_H
 #define OPENIMAGEIO_IMAGEBUFALGO_H
 
+#if defined(_MSC_VER)
+// Ignore warnings about DLL exported classes with member variables that are template classes.
+// This happens with the std::vector<T> members of PixelStats below.
+#  pragma warning (disable : 4251)
+#endif
+
 #include "imageio.h"
 #include "imagebuf.h"
 #include "fmath.h"
-#include "colortransfer.h"
+#include "color.h"
+
+
+#ifndef __OPENCV_CORE_TYPES_H__
+struct IplImage;  // Forward declaration; used by Intel Image lib & OpenCV
+#endif
+
+
 
 OIIO_NAMESPACE_ENTER
 {
@@ -71,6 +84,17 @@ bool DLLPUBLIC fill (ImageBuf &dst,
                      int ybegin, int yend,
                      int zbegin, int zend);
 
+/// Fill a subregion of the volume with a checkerboard.  The subregion
+/// is bounded by [xbegin,xend) X [ybegin,yend) X [zbegin,zend).  return
+/// true on success.
+bool DLLPUBLIC checker (ImageBuf &dst,
+                        int width,
+                        const float *color1,
+                        const float *color2,
+                        int xbegin, int xend,
+                        int ybegin, int yend,
+                        int zbegin=0, int zend=1);
+
 /// Enum describing options to be passed to transform
 
 enum DLLPUBLIC AlignedTransform
@@ -102,6 +126,19 @@ bool DLLPUBLIC transform (ImageBuf &dst, const ImageBuf &src, AlignedTransform t
 
 bool DLLPUBLIC setNumChannels(ImageBuf &dst, const ImageBuf &src, int numChannels);
 
+
+/// Make dst be a cropped copy of src, but with the new pixel data
+/// window range [xbegin..xend) x [ybegin..yend).  Source pixel data
+/// falling outside this range will not be transferred to dst.  If
+/// the new pixel range extends beyond that of the source image, those
+/// new pixels will get the color specified by bordercolor[0..nchans-1],
+/// or with black/zero values if bordercolor is NULL.
+bool DLLPUBLIC crop (ImageBuf &dst, const ImageBuf &src,
+                     int xbegin, int xend, int ybegin, int yend,
+                     const float *bordercolor=NULL);
+
+
+
 /// Add the pixels of two images A and B, putting the sum in dst.
 /// The 'options' flag controls behaviors, particular of what happens
 /// when A, B, and dst have differing data windows.  Note that dst must
@@ -122,31 +159,28 @@ enum DLLPUBLIC AddOptions
 };
 
 
-
-/// Copy a crop window of src to dst.  The crop region is bounded by
-/// [xbegin..xend) X [ybegin..yend), with the pixels affected including
-/// begin but not including the end pixel (just like STL ranges).  The
-/// cropping can be done one of several ways, specified by the options
-/// parameter, one of: CROP_CUT, CROP_WINDOW, CROP_BLACK, CROP_WHITE,
-/// CROP_TRANS.
-bool DLLPUBLIC crop (ImageBuf &dst, const ImageBuf &src,
-           int xbegin, int xend, int ybegin, int yend, int options);
-
-enum DLLPUBLIC CropOptions 
-{
-    CROP_CUT, 	  ///< cut out a pixel region to make a new image at the origin
-    CROP_WINDOW,  ///< reduce the pixel data window, keep in the same position
-    CROP_BLACK,	  ///< color to black all the pixels outside of the bounds
-    CROP_WHITE,	  ///< color to white all the pixels outside of the bounds
-    CROP_TRANS	  ///< make all pixels out of bounds transparent (zero)
-};
-
-
-
-/// Apply a transfer function to the pixel values.
+/// Apply a color transform to the pixel values
 ///
-bool DLLPUBLIC colortransfer (ImageBuf &dst, const ImageBuf &src,
-                              ColorTransfer *tfunc);
+/// In-place operations (dst == src) are supported
+/// If unpremult is specified, unpremultiply before color conversion,
+/// then premultiply after the color conversion.  You'll may want to use this
+/// flag if your image contains an alpha channel
+///
+/// Note: the dst image does not need to equal the src image, either in buffers
+///       or bit depths. (For example, it is common for the src buffer to be a
+///       lower bit depth image and the output image to be float).
+/// If the output buffer is less than floating-point, results may be quantized /
+/// clamped
+/// return true on success, false on failure
+
+
+bool DLLPUBLIC colorconvert (ImageBuf &dst, const ImageBuf &src,
+    const ColorProcessor * processor,
+    bool unpremult);
+
+bool DLLPUBLIC colorconvert (float * color, int nchannels,
+    const ColorProcessor * processor,
+    bool unpremult);
 
 
 struct DLLPUBLIC PixelStats {
@@ -230,6 +264,45 @@ std::string DLLPUBLIC computePixelHashSHA1(const ImageBuf &src,
 bool DLLPUBLIC resize (ImageBuf &dst, const ImageBuf &src,
                        int xbegin, int xend, int ybegin, int yend,
                        Filter2D *filter=NULL);
+
+
+enum DLLPUBLIC NonFiniteFixMode
+{
+    NONFINITE_NONE = 0,     ///< Do nothing
+    NONFINITE_BLACK = 1,    ///< Replace nonfinite pixels with black
+    NONFINITE_BOX3 = 2,     ///< Replace nonfinite pixels with 3x3 finite average
+};
+
+/// Fix all non-finite pixels (nan/inf) using the specified approach
+bool DLLPUBLIC fixNonFinite(ImageBuf &dst, const ImageBuf &src,
+                            NonFiniteFixMode mode=NONFINITE_BOX3,
+                            int * pixelsFixed=NULL);
+
+
+/// Convert an IplImage, used by OpenCV and Intel's Image Libray, and
+/// set ImageBuf dst to be the same image (copying the pixels).  If
+/// convert is not set to UNKNOWN, try to establish dst as holding that
+/// data type and convert the IplImage data.  Return true if ok, false
+/// if it couldn't figure out how to make the conversion from IplImage
+/// to ImageBuf.  If OpenImageIO was compiled without OpenCV support,
+/// this function will return false without modifying dst.
+bool DLLPUBLIC from_IplImage (ImageBuf &dst, const IplImage *ipl,
+                              TypeDesc convert=TypeDesc::UNKNOWN);
+
+/// Construct an IplImage*, used by OpenCV and Intel's Image Library,
+/// that is equivalent to the ImageBuf src.  If it is not possible, or
+/// if OpenImageIO was compiled without OpenCV support, then return
+/// NULL.  The ownership of the IplImage is fully transferred to the
+/// calling application.
+DLLPUBLIC IplImage* to_IplImage (const ImageBuf &src);
+
+/// Capture a still image from a designated camera.  If able to do so,
+/// store the image in dst and return true.  If there is no such device,
+/// or support for camera capture is not available (such as if OpenCV
+/// support was not enabled at compile time), return false and do not
+/// alter dst.
+bool DLLPUBLIC capture_image (ImageBuf &dst, int cameranum = 0,
+                              TypeDesc convert=TypeDesc::UNKNOWN);
 
 
 };  // end namespace ImageBufAlgo

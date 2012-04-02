@@ -45,25 +45,28 @@ typedef shared_ptr<ImageRec> ImageRecRef;
 
 
 
-struct Oiiotool {
-
+class Oiiotool {
+public:
     // General options
     bool verbose;
     bool noclobber;
     bool allsubimages;
     bool printinfo;
     bool printstats;
+    bool hash;
     bool updatemode;
     int threads;
     
     // Output options
-    std::string output_dataformatname;
+    TypeDesc output_dataformat;
+    int output_bitspersample;
     bool output_scanline;
     int output_tilewidth, output_tileheight;
     std::string output_compression;
     int output_quality;
     std::string output_planarconfig;
     bool output_adjust_time;
+    bool output_autocrop;
 
     // Options for --diff
     float diff_warnthresh;
@@ -78,29 +81,72 @@ struct Oiiotool {
     std::vector<ImageRecRef> image_stack;    // stack of previous images
     ImageCache *imagecache;                  // back ptr to ImageCache
     int return_value;                        // oiiotool command return code
-
-    CallbackFunction pending_callback;
-    int pending_argc;
-    const char *pending_argv[4];
+    ColorConfig colorconfig;                 // OCIO color config
 
     Oiiotool ()
         : verbose(false), noclobber(false), allsubimages(false),
-          printinfo(false), printstats(false), updatemode(false),
+          printinfo(false), printstats(false), hash(false),
+          updatemode(false),
           threads(0),
+          output_dataformat(TypeDesc::UNKNOWN), output_bitspersample(0),
           output_scanline(false), output_tilewidth(0), output_tileheight(0),
           output_compression(""), output_quality(-1),
           output_planarconfig("default"),
-          output_adjust_time(false),
-          diff_warnthresh(1.0e-6), diff_warnpercent(0),
+          output_adjust_time(false), output_autocrop(true),
+          diff_warnthresh(1.0e-6f), diff_warnpercent(0),
           diff_hardwarn(std::numeric_limits<float>::max()),
-          diff_failthresh(1.0e-6), diff_failpercent(0),
+          diff_failthresh(1.0e-6f), diff_failpercent(0),
           diff_hardfail(std::numeric_limits<float>::max()),
           imagecache(NULL),
           return_value (EXIT_SUCCESS),
-          pending_callback(NULL), pending_argc(0)
+          m_pending_callback(NULL), m_pending_argc(0)
     {
     }
 
+    // Force img to be read at this point.
+    void read (ImageRecRef img);
+    // Read the current image
+    void read () { read (curimg); }
+
+    // If required_images are not yet on the stack, then postpone this
+    // call by putting it on the 'pending' list and return true.
+    // Otherwise (if enough images are on the stack), return false.
+    bool postpone_callback (int required_images, CallbackFunction func,
+                            int argc, const char *argv[]);
+
+    // Process any pending commands.
+    void process_pending ();
+
+    CallbackFunction pending_callback () const { return m_pending_callback; }
+    const char *pending_callback_name () const { return m_pending_argv[0]; }
+
+    void push (const ImageRecRef &img) {
+        if (img) {
+            if (curimg)
+                image_stack.push_back (curimg);
+            curimg = img;
+        }
+    }
+
+    void push (ImageRec *newir) { push (ImageRecRef(newir)); }
+
+    ImageRecRef pop () {
+        ImageRecRef r = curimg;
+        if (image_stack.size()) {
+            // There are images on the full stack -- pop it
+            curimg = image_stack.back ();
+            image_stack.resize (image_stack.size()-1);
+        } else {
+            // Nothing on the stack, so get rid of the current image
+            curimg = ImageRecRef();
+        }
+        return r;
+    }
+
+private:
+    CallbackFunction m_pending_callback;
+    int m_pending_argc;
+    const char *m_pending_argv[4];
 };
 
 
@@ -133,7 +179,7 @@ private:
 
 
 
-struct ImageRec {
+class ImageRec {
 public:
     ImageRec (const std::string &name, ImageCache *imagecache)
         : m_name(name), m_elaborated(false),
@@ -142,17 +188,17 @@ public:
     { }
 
     // Copy an existing ImageRec.  Copy just the single subimage_to_copy
-    // if >= 0, or all subimages if <0.  Copy mip levels only if
-    // copy_miplevels is true, otherwise only the top MIP level.  If
-    // writable is true, we expect to need to alter the pixels of the
-    // resulting ImageRec.  If copy_pixels is false, just make the new
-    // image big enough, no need to initialize the pixel values.
+    // if >= 0, or all subimages if <0.  Copy just the single
+    // miplevel_to_copy if >= 0, or all MIP levels if <0.  If writable
+    // is true, we expect to need to alter the pixels of the resulting
+    // ImageRec.  If copy_pixels is false, just make the new image big
+    // enough, no need to initialize the pixel values.
     ImageRec (ImageRec &img, int subimage_to_copy = -1,
-              bool copy_miplevels = true, bool writable = true,
+              int miplevel_to_copy = -1, bool writable = true,
               bool copy_pixels = true);
 
     // Initialize an ImageRec with the given spec.
-    ImageRec (const std::string &name, ImageSpec &spec,
+    ImageRec (const std::string &name, const ImageSpec &spec,
               ImageCache *imagecache);
 
     // Number of subimages
@@ -243,12 +289,21 @@ bool print_info (const std::string &filename,
                  long long &totalsize, std::string &error);
 
 
+// Modify the resolution and/or offset according to what's in geom.
+// Valid geometries are WxH (resolution), +X+Y (offsets), WxH+X+Y
+// (resolution and offset).  If 'allow_scaling' is true, geometries of
+// S% (e.g. "50%") or just S (e.g., "1.2") will be accepted to scale the
+// existing width and height (rounding to the nearest whole number of
+// pixels.
+bool adjust_geometry (int &w, int &h, int &x, int &y, const char *geom,
+                      bool allow_scaling=false);
+
 // Set an attribute of the given image.  The type should be one of
 // TypeDesc::INT (decode the value as an int), FLOAT, STRING, or UNKNOWN
 // (look at the string and try to discern whether it's an int, float, or
 // string).  If the 'value' string is empty, it will delete the
 // attribute.
-bool set_attribute (ImageRec &img, const std::string &attribname,
+bool set_attribute (ImageRecRef img, const std::string &attribname,
                     TypeDesc type, const std::string &value);
 
 inline bool same_size (const ImageBuf &A, const ImageBuf &B)

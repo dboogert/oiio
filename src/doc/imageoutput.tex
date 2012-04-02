@@ -1019,6 +1019,7 @@ the order that the directories are listed.  Here is an example:
 
 \subsection{Error checking}
 \label{sec:imageoutput:errors}
+\index{error checking}
 
 Nearly every \ImageOutput API function returns a {\cf bool} indicating
 whether the operation succeeded ({\cf true}) or failed ({\cf false}).
@@ -1137,6 +1138,16 @@ by this query:
   entire data block is composed of pixels with value zero.  Plugins
   that support this achieve a speedup when passing blank scanlines or
   tiles (since no actual data needs to be transmitted or converted).
+\item[\rm \qkw{displaywindow}] Does the image format support specifying
+  a display (``full'') window that is distinct from the pixel data
+  window?
+\item[\rm \qkw{origin}] Does the image format support specifying
+  a pixel window origin (i.e., nonzero \ImageSpec {\cf x}, {\cf y},
+  {\cf z})?
+\item[\rm \qkw{negativeorigin}] Does the image format allow pixel
+  and data window origins (i.e., nonzero \ImageSpec {\cf x}, {\cf y},
+  {\cf z}, {\cf full_x}, {\cf full_y}, {\cf full_z}) to have
+  negative values?
 \end{description}
 
 \noindent This list of queries may be extended in future releases.
@@ -1351,6 +1362,7 @@ This is currently undefined and is reserved for future use.
 \apiend
 
 \apiitem{std::string {\ce geterror} ()}
+\index{error checking}
 Returns the current error string describing what went wrong if
 any of the public methods returned {\kw false} indicating an error.
 (Hopefully the implementation plugin called {\kw error()} with a

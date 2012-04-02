@@ -37,11 +37,24 @@
 #endif
 #include <vector>
 
-#include <boost/algorithm/string.hpp>
-using boost::algorithm::iequals;
-
 #include <boost/foreach.hpp>
 #include <boost/filesystem.hpp>
+
+#include <QtCore/QSettings>
+#include <QtCore/QTimer>
+#include <QtGui/QApplication>
+#include <QtGui/QComboBox>
+#include <QtGui/QDesktopWidget>
+#include <QtGui/QFileDialog>
+#include <QtGui/QKeyEvent>
+#include <QtGui/QLabel>
+#include <QtGui/QMenu>
+#include <QtGui/QMenuBar>
+#include <QtGui/QMessageBox>
+#include <QtGui/QProgressBar>
+#include <QtGui/QResizeEvent>
+#include <QtGui/QSpinBox>
+#include <QtGui/QStatusBar>
 
 #include <OpenEXR/ImathFun.h>
 
@@ -56,10 +69,42 @@ using boost::algorithm::iequals;
 namespace
 {
     bool IsSpecSrgb(const ImageSpec & spec) {
-        return (iequals (spec.get_string_attribute ("oiio:ColorSpace"), "sRGB"));
+        return (Strutil::iequals (spec.get_string_attribute ("oiio:ColorSpace"), "sRGB"));
     }
 
 }
+
+
+
+static const char *s_file_filters = ""
+    "Image Files (*.bmp *.cin *.dds *.dpx *.f3d *.fits *.hdr *.ico *.iff *.jpg "
+    "*.jpe *.jpeg *.jif *.jfif *.jfi *.jp2 *.j2k *.exr *.png *.pbm *.pgm *.ppm "
+    "*.ptex *.rla *.sgi *.rgb *.rgba *.bw *.int *.inta *.pic *.tga *.tpic "
+    "*.tif *.tiff *.tx *.env *.sm *.vsm *.zfile);;"
+    "BMP (*.bmp);;"
+    "Cineon (*.cin);;"
+    "Direct Draw Surface (*.dds);;"
+    "DPX (*.dpx);;"
+    "Field3D (*.f3d);;"
+    "FITS (*.fits);;"
+    "HDR/RGBE (*.hdr);;"
+    "Icon (*.ico);;"
+    "IFF (*.iff);;"
+    "JPEG (*.jpg *.jpe *.jpeg *.jif *.jfif *.jfi);;"
+    "JPEG-2000 (*.jp2 *.j2k);;"
+    "OpenEXR (*.exr);;"
+    "Portable Network Graphics (*.png);;"
+    "PNM / Netpbm (*.pbm *.pgm *.ppm);;"
+    "Ptex (*.ptex);;"
+    "RLA (*.rla);;"
+    "SGI (*.sgi *.rgb *.rgba *.bw *.int *.inta);;"
+    "Softimage PIC (*.pic);;"
+    "Targa (*.tga *.tpic);;"
+    "TIFF (*.tif *.tiff *.tx *.env *.sm *.vsm);;"
+    "Zfile (*.zfile);;"
+    "All Files (*)";
+
+
 
 ImageViewer::ImageViewer ()
     : infoWindow(NULL), preferenceWindow(NULL), darkPaletteBox(NULL),
@@ -118,7 +163,7 @@ ImageViewer::~ImageViewer ()
 
 
 void
-ImageViewer::closeEvent (QCloseEvent *event)
+ImageViewer::closeEvent (QCloseEvent*)
 {
     writeSettings ();
 }
@@ -315,27 +360,6 @@ ImageViewer::createActions()
     slideShowAct = new QAction(tr("Start Slide Show"), this);
     connect(slideShowAct, SIGNAL(triggered()), this, SLOT(slideShow()));
 
-    slide1Act = new QAction(tr("1 second"), this);
-    slide1Act->setCheckable (true);
-    connect(slide1Act, SIGNAL(triggered()), this, SLOT(slide1()));
-
-    slide5Act = new QAction(tr("5 seconds"), this);
-    slide5Act->setCheckable (true);
-    slide5Act->setChecked (true);
-    connect(slide5Act, SIGNAL(triggered()), this, SLOT(slide5()));
-
-    slide15Act = new QAction(tr("15 seconds"), this);
-    slide15Act->setCheckable (true);
-    connect(slide15Act, SIGNAL(triggered()), this, SLOT(slide15()));
-
-    slide30Act = new QAction(tr("30 seconds"), this);
-    slide30Act->setCheckable (true);
-    connect(slide30Act, SIGNAL(triggered()), this, SLOT(slide30()));
-
-    slide60Act = new QAction(tr("60 seconds"), this);
-    slide60Act->setCheckable (true);
-    connect(slide60Act, SIGNAL(triggered()), this, SLOT(slide60()));
-
     slideLoopAct = new QAction(tr("Loop slide show"), this);
     slideLoopAct->setCheckable (true);
     slideLoopAct->setChecked (true);
@@ -387,6 +411,14 @@ ImageViewer::createActions()
         maxMemoryIC->setRange (128, 8192); //8GB probably ok for 64 bit
     maxMemoryIC->setSingleStep (64);
     maxMemoryIC->setSuffix (" MB");
+
+    slideShowDurationLabel = new QLabel (tr("Slide Show delay"));
+    slideShowDuration = new QSpinBox ();
+    slideShowDuration->setRange (1, 3600);
+    slideShowDuration->setSingleStep (1);
+    slideShowDuration->setSuffix (" s");
+    slideShowDuration->setAccelerated (true);
+    connect(slideShowDuration, SIGNAL(valueChanged(int)), this, SLOT(setSlideShowDuration(int)));
 }
 
 
@@ -434,13 +466,6 @@ ImageViewer::createMenus()
 //    menuBar()->addMenu (imageMenu);
     slideMenu = new QMenu(tr("Slide Show"));
     slideMenu->addAction (slideShowAct);
-    slideMenu->addSeparator ();
-    slideMenu->addAction (slide1Act);
-    slideMenu->addAction (slide5Act);
-    slideMenu->addAction (slide15Act);
-    slideMenu->addAction (slide30Act);
-    slideMenu->addAction (slide60Act);
-    slideMenu->addSeparator ();
     slideMenu->addAction (slideLoopAct);
     slideMenu->addAction (slideNoLoopAct);
 
@@ -579,6 +604,8 @@ ImageViewer::readSettings (bool ui_is_set_up)
         maxMemoryIC->setValue (settings.value ("maxMemoryIC", 512).toInt());
     else
         maxMemoryIC->setValue (settings.value ("maxMemoryIC", 2048).toInt());
+    slideShowDuration->setValue (settings.value ("slideShowDuration", 10).toInt());
+
     ImageCache *imagecache = ImageCache::create (true);
     imagecache->attribute ("automip", autoMipmap->isChecked());
     imagecache->attribute ("max_memory_MB", (float) maxMemoryIC->value ());
@@ -597,6 +624,7 @@ ImageViewer::writeSettings()
     settings.setValue ("darkPalette", darkPaletteBox->isChecked());
     settings.setValue ("autoMipmap", autoMipmap->isChecked());
     settings.setValue ("maxMemoryIC", maxMemoryIC->value());
+    settings.setValue ("slideShowDuration", slideShowDuration->value());
     QStringList recent;
     BOOST_FOREACH (const std::string &s, m_recent_files)
         recent.push_front (QString(s.c_str()));
@@ -619,14 +647,18 @@ image_progress_callback (void *opaque, float done)
 void
 ImageViewer::open()
 {
-    QStringList names;
-    names = QFileDialog::getOpenFileNames (this, tr("Open File(s)"),
-                                           QDir::currentPath());
-    if (names.empty())
+    static QString openPath = QDir::currentPath();
+    QFileDialog dialog(NULL, tr("Open File(s)"),
+                       openPath, tr(s_file_filters));
+    dialog.setAcceptMode (QFileDialog::AcceptOpen);
+    dialog.setFileMode (QFileDialog::ExistingFiles);
+    if (!dialog.exec())
         return;
+    openPath = dialog.directory().path();
+    QStringList names = dialog.selectedFiles();
+
     int old_lastimage = m_images.size()-1;
-    QStringList list = names;
-    for (QStringList::Iterator it = list.begin();  it != list.end();  ++it) {
+    for (QStringList::Iterator it = names.begin();  it != names.end();  ++it) {
         std::string filename = it->toUtf8().data();
         if (filename.empty())
             continue;
@@ -700,8 +732,8 @@ ImageViewer::updateRecentFilesMenu ()
 {
     for (size_t i = 0;  i < MaxRecentFiles;  ++i) {
         if (i < m_recent_files.size()) {
-            boost::filesystem::path fn (m_recent_files[i]);
-            openRecentAct[i]->setText (fn.leaf().c_str());
+            std::string name = Filesystem::filename (m_recent_files[i]);
+            openRecentAct[i]->setText (QString::fromStdString (name));
             openRecentAct[i]->setData (m_recent_files[i].c_str());
             openRecentAct[i]->setVisible (true);
         } else {
@@ -766,7 +798,8 @@ ImageViewer::saveAs()
         return;
     QString name;
     name = QFileDialog::getSaveFileName (this, tr("Save Image"),
-                                         QString(img->name().c_str()));
+                                         QString(img->name().c_str()),
+                                         tr(s_file_filters));
     if (name.isEmpty())
         return;
     bool ok = img->save (name.toStdString(), "", image_progress_callback, this);
@@ -1203,11 +1236,6 @@ ImageViewer::gammaPlus ()
 void
 ImageViewer::slide (long t, bool b)
 {
-    slide1Act->setChecked (t == 1000);
-    slide5Act->setChecked (t == 5000);
-    slide15Act->setChecked (t == 15000);
-    slide30Act->setChecked (t == 30000);
-    slide60Act->setChecked (t == 60000);
     slideLoopAct->setChecked (b == true);
     slideNoLoopAct->setChecked (b == false);
 }
@@ -1292,44 +1320,6 @@ ImageViewer::slideShow ()
 }
 
 
-void
-ImageViewer::slide1 ()
-{
-    slideDuration_ms = 1000;
-    slide(1000, slide_loop);
-}
-
-
-void
-ImageViewer::slide5 ()
-{
-    slideDuration_ms = 5000;
-    slide(5000, slide_loop);
-}
-
-
-void
-ImageViewer::slide15 ()
-{
-    slideDuration_ms = 15000;
-    slide(15000, slide_loop);
-}
-
-void
-ImageViewer::slide30 ()
-{
-    slideDuration_ms = 30000;
-    slide(30000, slide_loop);
-}
-
-
-void
-ImageViewer::slide60 ()
-{
-    slideDuration_ms = 60000;
-    slide(60000, slide_loop);
-}
-
 
 void
 ImageViewer::slideLoop ()
@@ -1347,18 +1337,19 @@ ImageViewer::slideNoLoop ()
 }
 
 
+void
+ImageViewer::setSlideShowDuration (int seconds)
+{
+    slideDuration_ms = seconds * 1000;
+}
+
+
 
 static bool
 compName (IvImage *first, IvImage *second)
 {
-#if BOOST_FILESYSTEM_VERSION == 3
-    std::string firstFile = boost::filesystem3::path(first->name()).leaf().string();
-    std::string secondFile = boost::filesystem3::path(second->name()).leaf().string();
-#else
-    std::string firstFile = boost::filesystem::path(first->name()).leaf();
-    std::string secondFile = boost::filesystem::path(second->name()).leaf();
-#endif
-    
+    std::string firstFile = Filesystem::filename (first->name());
+    std::string secondFile = Filesystem::filename (second->name());
     return (firstFile.compare(secondFile) < 0);
 }
 
@@ -1743,12 +1734,20 @@ ImageViewer::closeImg()
     m_images[m_current_image] = NULL;
     m_images.erase (m_images.begin()+m_current_image);
 
-    // FIXME:
-    // For all image indices we may be storing,
-    //   if == m_current_image, wrap to 0 if this was the last image
-    //   else if > m_current_image, subtract one
+    // Update image indices
+    // This should be done for all image indices we may be storing
+    if (m_last_image == m_current_image)
+    {
+        if (!m_images.empty() && m_last_image > 0)
+            m_last_image = 0;
+        else
+            m_last_image = -1;
+    }
+    if (m_last_image > m_current_image)
+        m_last_image --;
 
-    current_image (current_image() < (int)m_images.size() ? current_image() : 0);
+    m_current_image = m_current_image < (int)m_images.size() ? m_current_image : 0;
+    displayCurrentImage ();
 }
 
 
@@ -2001,7 +2000,7 @@ ImageViewer::about()
     QMessageBox::about(this, tr("About iv"),
             tr("<p><b>iv</b> is the image viewer for OpenImageIO.</p>"
                "<p>(c) Copyright 2008 Larry Gritz et al.  All Rights Reserved.</p>"
-               "<p>See http://openimageio.org for details.</p>"));
+               "<p>See <a href='http://openimageio.org'>http://openimageio.org</a> for details.</p>"));
 }
 
 

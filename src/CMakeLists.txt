@@ -1,6 +1,6 @@
 project (OpenImageIO)
-set (OIIO_VERSION_MAJOR 0)
-set (OIIO_VERSION_MINOR 11)
+set (OIIO_VERSION_MAJOR 1)
+set (OIIO_VERSION_MINOR 1)
 set (OIIO_VERSION_PATCH 0)
 
 cmake_minimum_required (VERSION 2.6)
@@ -28,7 +28,9 @@ set (FORCE_OPENGL_1 OFF CACHE BOOL "Force iv to use OpenGL's fixed pipeline")
 set (USE_TBB ON CACHE BOOL "Use TBB if needed")
 set (USE_PYTHON ON CACHE BOOL "Build the Python bindings")
 set (USE_FIELD3D ON CACHE BOOL "Use Field3D if found")
-set (USE_JASPER ON CACHE BOOL "Use Jasper for JPEG-2000 if found")
+set (USE_OPENJPEG ON CACHE BOOL "Use OpenJpeg if found")
+set (USE_OCIO ON CACHE BOOL "Use OpenColorIO for color management if found")
+set (USE_OPENCV ON CACHE BOOL "Use OpenCV if found")
 set (NOTHREADS OFF CACHE BOOL "Compile with no threads or locking")
 set (PYTHON_VERSION 2.6)
 set (USE_EXTERNAL_PUGIXML OFF CACHE BOOL
@@ -42,6 +44,13 @@ if (NOTHREADS)
     add_definitions ("-DNOTHREADS=1")
 else ()
     message (STATUS "Building with thread support")
+endif ()
+
+if (USE_TBB)
+    add_definitions ("-DUSE_TBB=1")
+else ()
+    add_definitions ("-DUSE_TBB=0")
+    message (STATUS "TBB will not be used")
 endif ()
 
 set(CMAKE_MODULE_PATH
@@ -63,9 +72,6 @@ include (oiio_macros)
 include (platform)
 include (externalpackages)
 
-
-# We want CTest for testing
-include (CTest)
 
 include_directories(
     ${CMAKE_SOURCE_DIR}/include/
@@ -171,6 +177,12 @@ if (MSVC)
 endif (MSVC)
 
 
+# We want CTest for testing
+# N.B. This needs to be added before any of the subdirectories, or
+# their add_test commands will not register.
+include (CTest)
+
+
 # Tell CMake to process the sub-directories
 add_subdirectory (libOpenImageIO)
 
@@ -193,6 +205,7 @@ if (NOT EMBEDPLUGINS)
     add_subdirectory (fits.imageio)
     add_subdirectory (hdr.imageio)
     add_subdirectory (ico.imageio)
+    add_subdirectory (iff.imageio)
     add_subdirectory (jpeg.imageio)
     add_subdirectory (jpeg2000.imageio)
     add_subdirectory (openexr.imageio)
@@ -206,10 +219,11 @@ if (NOT EMBEDPLUGINS)
     add_subdirectory (softimage.imageio)
     add_subdirectory (targa.imageio)
     add_subdirectory (tiff.imageio)
+    add_subdirectory (webp.imageio)
     add_subdirectory (zfile.imageio)
 endif ()
 
-if (USE_PYTHON AND Boost_PYTHON_FOUND)
+if (USE_PYTHON AND oiio_boost_PYTHON_FOUND)
     add_subdirectory (python)
 endif ()
 
@@ -219,13 +233,40 @@ add_subdirectory (doc)
 
 #########################################################################
 # Testing
+# 
+# Just call oiio_add_tests(testname...) for each test.  Additional
+# optional arguments include:
+#     FOUNDVAR   specifies the name of a CMAKE variable; if not defined,
+#                    the test will not be added for 'make test' (helpful
+#                    for excluding tests for libraries not found).
+#     IMAGEDIR   specifies a directory for test images, one level higher
+#                    than where the oiio top level source lives -- a 
+#                    message will be printed if not found.
+#     URL        URL where the test images can be found, will be 
+#                    incorporated into the error message if the test
+#                    image directory is not found.
+#     LABEL      If set to "broken", will designate the test as one
+#                    that is known to be broken, so will only be run
+#                    for "make testall", but not "make test".
+#
+
+# Make a copy of the testsuite into the build area
+if (DEFINED CMAKE_VERSION AND NOT CMAKE_VERSION VERSION_LESS 2.8)
+    file (COPY ${PROJECT_SOURCE_DIR}/../testsuite
+          DESTINATION ${CMAKE_BINARY_DIR})
+endif()
 
 # List all the individual testsuite tests here:
-oiio_add_tests (ico gpsread oiiotool sgi rla
+oiio_add_tests (ico gpsread misnamed-file
+                oiiotool oiiotool-fixnan 
+                sgi rla psd dpx png
                 texture-fill texture-gray texture-grid
-                texture-missing texture-pointsample texture-res
+                texture-missing texture-overscan
+                texture-pointsample texture-width0blur texture-res
                 texture-skinny texture-fat
-                imagecache-files texture-field3d)
+                texture-field3d
+               )
+
 
 # List testsuites which need special external reference images from the web
 # here:
@@ -242,8 +283,9 @@ oiio_add_tests (openexr-suite openexr-multires openexr-chroma
     URL http://www.openexr.com/downloads.html)
 
 oiio_add_tests (jpeg2000
+    FOUNDVAR OPENJPEG_FOUND
     IMAGEDIR j2kp4files_v1_5
-    URL http://www.crc.ricoh.com/~gormish/jpeg2000conformance/)
+    URL http://www.itu.int/net/ITU-T/sigdb/speimage/ImageForm-s.aspx?val=10100803)
 
 oiio_add_tests (targa-tgautils
     IMAGEDIR TGAUTILS
@@ -254,8 +296,10 @@ oiio_add_tests (fits
     URL http://www.cv.nrao.edu/fits/data/tests/)
 
 oiio_add_tests (webp
+    FOUNDVAR WEBP_FOUND
     IMAGEDIR webp-images
     URL http://code.google.com/speed/webp/gallery.html)
+
 
 #########################################################################
 # Packaging
